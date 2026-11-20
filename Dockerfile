@@ -16,7 +16,8 @@ RUN go mod download
 COPY cmd cmd
 COPY db db
 COPY internal internal
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/proxy-manager-server ./cmd/server
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/proxy-manager-server ./cmd/server \
+    && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/proxy-manager-agent ./cmd/agent
 
 FROM alpine:3.22
 

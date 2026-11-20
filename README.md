@@ -50,6 +50,25 @@ gateway routes also require this line inside NGINX's `http` block:
 include /etc/nginx/proxy-manager/active.conf;
 ```
 
+## Docker
+
+The safe Docker layout keeps the privileged agent on the NGINX host. Only the
+web server and PostgreSQL run in Compose:
+
+```bash
+cp .env.docker.example .env
+docker compose up -d --build
+```
+
+The server publishes only `127.0.0.1:8080`; expose it through the host NGINX.
+The agent Unix socket is bind-mounted into the server container. Set
+`PROXY_MANAGER_AGENT_GID` to the numeric ID of the host
+`proxy-manager-agent` group.
+
+Do not put the agent in a privileged container and do not mount the Docker
+daemon socket into it. The agent intentionally remains a small systemd service
+with access limited to NGINX, Certbot, and its own state directories.
+
 The agent intentionally refuses to start without `PROXY_MANAGER_AGENT_TOKEN`. It should run only on the gateway host under systemd.
 
 See `docs/ARCHITECTURE.md` for security boundaries and the implementation roadmap.

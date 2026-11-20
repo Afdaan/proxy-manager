@@ -1,0 +1,9 @@
+.git
+.env
+.env.*
+!.env.docker.example
+apps/web/dist
+bin
+node_modules
+*.log
+coverage

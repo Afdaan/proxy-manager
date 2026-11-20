@@ -1,0 +1,45 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: proxy_manager
+      POSTGRES_USER: proxy_manager
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U proxy_manager -d proxy_manager"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  server:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PROXY_MANAGER_HTTP_ADDRESS: 0.0.0.0:8080
+      PROXY_MANAGER_DATABASE_URL: ${PROXY_MANAGER_DATABASE_URL:?set PROXY_MANAGER_DATABASE_URL in .env}
+      PROXY_MANAGER_COOKIE_SECURE: ${PROXY_MANAGER_COOKIE_SECURE:-true}
+      PROXY_MANAGER_BOOTSTRAP_NAME: ${PROXY_MANAGER_BOOTSTRAP_NAME:-Administrator}
+      PROXY_MANAGER_BOOTSTRAP_EMAIL: ${PROXY_MANAGER_BOOTSTRAP_EMAIL:?set PROXY_MANAGER_BOOTSTRAP_EMAIL in .env}
+      PROXY_MANAGER_BOOTSTRAP_PASSWORD: ${PROXY_MANAGER_BOOTSTRAP_PASSWORD:?set PROXY_MANAGER_BOOTSTRAP_PASSWORD in .env}
+      PROXY_MANAGER_AGENT_SOCKET: /run/proxy-manager/agent.sock
+      PROXY_MANAGER_AGENT_TOKEN: ${PROXY_MANAGER_AGENT_TOKEN:?set PROXY_MANAGER_AGENT_TOKEN in .env}
+    group_add:
+      - ${PROXY_MANAGER_AGENT_GID:?set PROXY_MANAGER_AGENT_GID in .env}
+    ports:
+      - 127.0.0.1:8080:8080
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - type: bind
+        source: /run/proxy-manager
+        target: /run/proxy-manager
+
+volumes:
+  postgres-data:

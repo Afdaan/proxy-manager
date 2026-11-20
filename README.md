@@ -34,6 +34,22 @@ pnpm lint
 pnpm build
 ```
 
+Production builds are written to `bin/proxy-manager-server`,
+`bin/proxy-manager-agent`, and `apps/web/dist`.
+
+## Expose the control plane
+
+Keep the Go server on `127.0.0.1:8080`. Copy
+`deploy/nginx/proxy-manager-ui.conf.example` into the NGINX HTTP configuration,
+replace `proxy.example.com`, validate with `nginx -t`, then reload NGINX.
+
+Set `PROXY_MANAGER_COOKIE_SECURE=true` after HTTPS is active. The generated
+gateway routes also require this line inside NGINX's `http` block:
+
+```nginx
+include /etc/nginx/proxy-manager/active.conf;
+```
+
 The agent intentionally refuses to start without `PROXY_MANAGER_AGENT_TOKEN`. It should run only on the gateway host under systemd.
 
 See `docs/ARCHITECTURE.md` for security boundaries and the implementation roadmap.

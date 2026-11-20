@@ -1,0 +1,20 @@
+[Unit]
+Description=Proxy Manager web control plane
+After=network.target postgresql.service proxy-manager-agent.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/proxy-manager-server
+EnvironmentFile=/etc/proxy-manager/server.env
+User=proxy-manager
+Group=proxy-manager
+SupplementaryGroups=proxy-manager-agent
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

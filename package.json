@@ -1,0 +1,21 @@
+{
+  "name": "proxy-manager",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Independent NGINX reverse proxy control plane",
+  "scripts": {
+    "dev:web": "pnpm --dir apps/web dev",
+    "dev:server": "go run ./cmd/server",
+    "dev:agent": "go run ./cmd/agent",
+    "build": "pnpm --dir apps/web build && go build ./cmd/server ./cmd/agent",
+    "lint": "pnpm --dir apps/web lint && go vet ./...",
+    "test": "pnpm --dir apps/web test && go test ./..."
+  },
+  "keywords": [
+    "nginx",
+    "reverse-proxy",
+    "waf"
+  ],
+  "license": "UNLICENSED",
+  "packageManager": "pnpm@12.21.0"
+}

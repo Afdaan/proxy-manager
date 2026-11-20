@@ -1,0 +1,25 @@
+[Unit]
+Description=Proxy Manager privileged NGINX agent
+After=network.target nginx.service
+Requires=nginx.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/proxy-manager-agent
+EnvironmentFile=/etc/proxy-manager/agent.env
+User=root
+Group=root
+RuntimeDirectory=proxy-manager
+RuntimeDirectoryMode=0750
+StateDirectory=proxy-manager
+StateDirectoryMode=0750
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/etc/nginx/proxy-manager /var/lib/proxy-manager /run/proxy-manager
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

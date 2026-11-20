@@ -1,0 +1,172 @@
+import { useQuery } from '@tanstack/react-query'
+import {
+  Activity,
+  ArrowUpRight,
+  Ban,
+  KeyRound,
+  Network,
+  ShieldCheck,
+  TerminalSquare,
+} from 'lucide-react'
+
+import { getSystemOverview, type FeatureStatus } from '../api/client'
+import { Badge } from '../components/ui/badge'
+import { Button } from '../components/ui/button'
+import { Card } from '../components/ui/card'
+
+const emptyOverview = {
+  agentStatus: 'offline' as const,
+  proxyHosts: 0,
+  certificates: 0,
+  blockedToday: 0,
+  features: [] as FeatureStatus[],
+}
+
+const fallbackFeatures: FeatureStatus[] = [
+  { id: 'reverse-proxy', name: 'Reverse proxy', status: 'foundation' },
+  { id: 'rate-limit', name: 'Rate limiting', status: 'renderer-ready' },
+  { id: 'waf', name: 'WAF policy', status: 'renderer-ready' },
+]
+
+export function DashboardPage() {
+  const overviewQuery = useQuery({ queryKey: ['overview'], queryFn: getSystemOverview })
+  const overview = overviewQuery.data ?? emptyOverview
+  const features = overview.features.length ? overview.features : fallbackFeatures
+
+  return (
+    <div className="page-enter space-y-6">
+      <section className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+        <div>
+          <p className="font-mono text-xs text-muted">{jakartaDate()}</p>
+          <h2 className="mt-2 max-w-3xl text-3xl font-semibold tracking-[-0.04em] md:text-5xl">
+            One ingress. Clear control.
+          </h2>
+          <p className="mt-3 max-w-2xl text-sm leading-6 text-muted">
+            Manage NGINX routes, certificates, and security policy without exposing raw infrastructure controls.
+          </p>
+        </div>
+        <Button variant="primary">
+          <Network className="size-4" /> Add proxy host
+        </Button>
+      </section>
+
+      <section className="grid gap-3 sm:grid-cols-3">
+        <Metric icon={Network} label="Proxy hosts" value={overview.proxyHosts} />
+        <Metric icon={KeyRound} label="Certificates" value={overview.certificates} />
+        <Metric icon={Ban} label="Blocked today" value={overview.blockedToday} />
+      </section>
+
+      <section className="grid gap-4 xl:grid-cols-[1.45fr_1fr]">
+        <RuntimeStatus agentStatus={overview.agentStatus} serverOnline={!overviewQuery.isError} />
+        <DeploymentGuide />
+      </section>
+
+      <Card>
+        <div className="border-b px-5 py-4">
+          <h3 className="font-bold">Security modules</h3>
+          <p className="mt-1 text-xs text-muted">Capability status from the server contract</p>
+        </div>
+        <div className="grid divide-y md:grid-cols-2 md:divide-x md:divide-y-0 xl:grid-cols-3">
+          {features.map((feature) => (
+            <div className="flex items-center justify-between gap-3 p-5" key={feature.id}>
+              <div>
+                <p className="text-sm font-bold">{feature.name}</p>
+                <p className="mt-1 font-mono text-[10px] text-muted">{feature.id}</p>
+              </div>
+              <Badge tone={feature.status === 'planned' ? 'warning' : 'success'}>{feature.status}</Badge>
+            </div>
+          ))}
+        </div>
+      </Card>
+    </div>
+  )
+}
+
+function jakartaDate() {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    dateStyle: 'full',
+    timeZone: 'Asia/Jakarta',
+  }).formatToParts(new Date())
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]))
+  return `${values.weekday} / ${values.day} ${values.month} ${values.year} / ASIA-JAKARTA`.toUpperCase()
+}
+
+function Metric({ icon: Icon, label, value }: { icon: typeof Network; label: string; value: number }) {
+  return (
+    <Card className="flex items-center justify-between p-5">
+      <div>
+        <p className="text-xs font-bold tracking-wide text-muted uppercase">{label}</p>
+        <p className="mt-3 text-3xl font-semibold tracking-[-0.04em]">{value}</p>
+      </div>
+      <div className="grid size-11 place-items-center rounded-lg border bg-background">
+        <Icon className="size-5" />
+      </div>
+    </Card>
+  )
+}
+
+function RuntimeStatus({ agentStatus, serverOnline }: { agentStatus: string; serverOnline: boolean }) {
+  return (
+    <Card className="overflow-hidden">
+      <div className="flex items-center justify-between border-b px-5 py-4">
+        <div>
+          <h3 className="font-bold">Runtime status</h3>
+          <p className="mt-1 text-xs text-muted">Live control-plane components</p>
+        </div>
+        <Badge tone={agentStatus === 'online' ? 'success' : 'warning'}>{agentStatus}</Badge>
+      </div>
+      <div className="divide-y">
+        <RuntimeRow icon={Activity} name="Web server" note="API and embedded UI" status={serverOnline ? 'online' : 'offline'} />
+        <RuntimeRow icon={TerminalSquare} name="Gateway agent" note="NGINX apply and rollback" status={agentStatus} />
+        <RuntimeRow icon={ShieldCheck} name="Policy renderer" note="Typed NGINX configuration" status="ready" />
+      </div>
+    </Card>
+  )
+}
+
+function RuntimeRow({ icon: Icon, name, note, status }: { icon: typeof Activity; name: string; note: string; status: string }) {
+  const online = status === 'online' || status === 'ready'
+  return (
+    <div className="flex items-center gap-4 px-5 py-4">
+      <div className="grid size-9 place-items-center rounded-md border bg-background">
+        <Icon className="size-4" />
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-bold">{name}</p>
+        <p className="mt-0.5 truncate text-xs text-muted">{note}</p>
+      </div>
+      <span className={`size-2 rounded-full ${online ? 'bg-lime-500' : 'bg-amber-400'}`} aria-label={status} />
+    </div>
+  )
+}
+
+function DeploymentGuide() {
+  const steps = [
+    'Create a proxy host',
+    'Validate generated NGINX config',
+    'Apply an immutable revision',
+    'Issue the certificate',
+  ]
+
+  return (
+    <Card className="p-5">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h3 className="font-bold">First deployment</h3>
+          <p className="mt-1 text-xs leading-5 text-muted">The safe path from UI state to active traffic.</p>
+        </div>
+        <ArrowUpRight className="size-4 text-muted" />
+      </div>
+      <ol className="mt-6 space-y-4">
+        {steps.map((step, index) => (
+          <li className="flex gap-3" key={step}>
+            <span className="grid size-6 shrink-0 place-items-center rounded-full border bg-background font-mono text-[10px] font-bold">
+              {index + 1}
+            </span>
+            <span className="pt-0.5 text-sm font-semibold">{step}</span>
+          </li>
+        ))}
+      </ol>
+    </Card>
+  )
+}

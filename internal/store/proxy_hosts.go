@@ -32,6 +32,7 @@ type ProxyHost struct {
 	TLSMode             string `json:"tlsMode"`
 	WAFMode             string `json:"wafMode"`
 	RateLimitEnabled    bool   `json:"rateLimitEnabled"`
+	CanWrite            bool   `json:"canWrite"`
 	ConfigurationStatus string `json:"configurationStatus"`
 	ConfigurationError  string `json:"configurationError,omitempty"`
 	Version             int64  `json:"version"`
@@ -114,8 +115,8 @@ func (store *Store) ListProxyHosts(ctx context.Context, userID string) ([]ProxyH
 		       proxy_hosts.name,
 		       proxy_hosts.enabled,
 		       proxy_hosts.primary_domain,
-		       upstreams.url,
-		       upstreams.upstream_count,
+		       COALESCE(upstreams.url, ''),
+		       COALESCE(upstreams.upstream_count, 0),
 		       proxy_hosts.load_balancing,
 		       COALESCE(proxy_hosts.tls_policy->>'mode', 'off'),
 		       COALESCE(proxy_hosts.waf_policy->>'mode', 'off'),
@@ -133,6 +134,20 @@ func (store *Store) ListProxyHosts(ctx context.Context, userID string) ([]ProxyH
 		               THEN COALESCE(latest_deployment.error_message, '')
 		           ELSE ''
 		       END,
+		       EXISTS (
+		           SELECT 1
+		           FROM application_memberships memberships
+		           JOIN role_permissions ON role_permissions.role_id = memberships.role_id
+		           WHERE memberships.application_id = proxy_hosts.application_id
+		             AND memberships.user_id = $1
+		             AND role_permissions.permission_name = 'proxy_hosts.write'
+		       ) OR EXISTS (
+		           SELECT 1
+		           FROM user_platform_roles platform_roles
+		           JOIN role_permissions ON role_permissions.role_id = platform_roles.role_id
+		           WHERE platform_roles.user_id = $1
+		             AND role_permissions.permission_name = 'platform.admin'
+		       ),
 		       proxy_hosts.version
 		FROM proxy_hosts
 		JOIN applications ON applications.id = proxy_hosts.application_id
@@ -144,7 +159,7 @@ func (store *Store) ListProxyHosts(ctx context.Context, userID string) ([]ProxyH
 		    ORDER BY config_revisions.generation DESC
 		    LIMIT 1
 		) latest_deployment ON true
-		JOIN LATERAL (
+		LEFT JOIN LATERAL (
 		    SELECT url, COUNT(*) OVER () AS upstream_count FROM upstreams
 		    WHERE proxy_host_id = proxy_hosts.id
 		    ORDER BY created_at, id
@@ -184,6 +199,7 @@ func (store *Store) ListProxyHosts(ctx context.Context, userID string) ([]ProxyH
 			&host.RateLimitEnabled,
 			&host.ConfigurationStatus,
 			&host.ConfigurationError,
+			&host.CanWrite,
 			&host.Version,
 		); err != nil {
 			return nil, fmt.Errorf("scan proxy host: %w", err)
@@ -345,6 +361,7 @@ func (store *Store) CreateProxyHost(ctx context.Context, userID string, params C
 			TLSMode:             "off",
 			WAFMode:             site.WAF.Mode,
 			RateLimitEnabled:    site.RateLimit.Enabled,
+			CanWrite:            true,
 			ConfigurationStatus: "applying",
 			Version:             1,
 		},

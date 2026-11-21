@@ -1,15 +1,20 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronDown, Network, Plus, Search, Server, ShieldCheck, Trash2, X } from 'lucide-react'
+import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
+import { ChevronDown, Network, Pencil, Plus, Search, Server, ShieldCheck, Trash2, X } from 'lucide-react'
 import { useMemo, useState, type FormEvent, type ReactNode } from 'react'
 
 import {
   APIError,
   createProxyHost,
+  deleteProxyHost,
   getApplications,
+  getProxyHost,
   getProxyHosts,
+  updateProxyHost,
   type CreateProxyHostResult,
   type CreateProxyHostInput,
   type ProxyHost,
+  type ProxyHostDetail,
+  type UpdateProxyHostInput,
   type UpstreamInput,
 } from '../api/client'
 import { Badge } from '../components/ui/badge'
@@ -24,8 +29,11 @@ const defaultBackend = (): UpstreamInput => ({
   backup: false,
 })
 
+type HostFormInput = CreateProxyHostInput & { enabled: boolean }
+
 export function ProxyHostsPage() {
   const [creating, setCreating] = useState(false)
+  const [editingHostID, setEditingHostID] = useState('')
   const [lastSave, setLastSave] = useState<CreateProxyHostResult | null>(null)
   const [search, setSearch] = useState('')
   const queryClient = useQueryClient()
@@ -34,6 +42,11 @@ export function ProxyHostsPage() {
     queryKey: ['proxy-hosts'],
     queryFn: getProxyHosts,
     refetchInterval: (query) => query.state.data?.some((host) => ['applying', 'retrying'].includes(host.configurationStatus)) ? 3000 : false,
+  })
+  const detailQuery = useQuery({
+    queryKey: ['proxy-host', editingHostID],
+    queryFn: () => getProxyHost(editingHostID),
+    enabled: editingHostID !== '',
   })
   const createMutation = useMutation({
     mutationFn: createProxyHost,
@@ -45,6 +58,22 @@ export function ProxyHostsPage() {
         queryClient.invalidateQueries({ queryKey: ['overview'] }),
         queryClient.invalidateQueries({ queryKey: ['deployments'] }),
       ])
+    },
+  })
+  const updateMutation = useMutation({
+    mutationFn: ({ id, input }: { id: string; input: UpdateProxyHostInput }) => updateProxyHost(id, input),
+    onSuccess: async (result) => {
+      setEditingHostID('')
+      setLastSave(result)
+      await invalidateGatewayQueries(queryClient)
+    },
+  })
+  const deleteMutation = useMutation({
+    mutationFn: ({ id, version }: { id: string; version: number }) => deleteProxyHost(id, version),
+    onSuccess: async () => {
+      setEditingHostID('')
+      setLastSave(null)
+      await invalidateGatewayQueries(queryClient)
     },
   })
   const hosts = useMemo(() => {
@@ -65,7 +94,7 @@ export function ProxyHostsPage() {
           <h2 className="text-3xl font-semibold tracking-[-0.04em]">Proxy hosts</h2>
           <p className="mt-2 text-sm text-muted">Save once. The gateway validates and applies the complete NGINX configuration automatically.</p>
         </div>
-        <Button onClick={() => setCreating((value) => !value)} variant="primary">
+        <Button onClick={() => { setEditingHostID(''); setCreating((value) => !value) }} variant="primary">
           {creating ? <X className="size-4" /> : <Plus className="size-4" />} {creating ? 'Cancel' : 'New host'}
         </Button>
       </section>
@@ -73,12 +102,48 @@ export function ProxyHostsPage() {
       {lastSave && <SaveResult host={lastSavedHost} result={lastSave} />}
 
       {creating && (
-        <CreateHostForm
+        <HostForm
           applications={applicationsQuery.data ?? []}
           disabled={createMutation.isPending || applicationsQuery.isPending}
           error={createMutation.error}
-          onSubmit={(input) => createMutation.mutate(input)}
+          onSubmit={({ enabled: _enabled, ...input }) => createMutation.mutate(input)}
         />
+      )}
+
+      {editingHostID && (
+        detailQuery.isPending ? (
+          <Card className="grid min-h-64 place-items-center font-mono text-xs text-muted">LOADING HOST CONFIGURATION</Card>
+        ) : detailQuery.isError ? (
+          <Card className="p-5 text-sm text-danger">{detailQuery.error instanceof APIError ? detailQuery.error.message : 'Unable to load proxy host.'}</Card>
+        ) : (
+          <HostForm
+            applications={applicationsQuery.data ?? []}
+            disabled={updateMutation.isPending || deleteMutation.isPending}
+            error={updateMutation.error ?? deleteMutation.error}
+            host={detailQuery.data}
+            onDelete={() => {
+              if (window.confirm(`Delete ${detailQuery.data.primaryDomain}? NGINX will remove this route immediately after validation.`)) {
+                deleteMutation.mutate({ id: detailQuery.data.id, version: detailQuery.data.version })
+              }
+            }}
+            onSubmit={(input) => updateMutation.mutate({
+              id: detailQuery.data.id,
+              input: {
+                enabled: input.enabled,
+                name: input.name,
+                primaryDomain: input.primaryDomain,
+                domainAliases: input.domainAliases,
+                upstreams: input.upstreams,
+                loadBalancing: input.loadBalancing,
+                rateLimit: input.rateLimit,
+                waf: input.waf,
+                securityHeaders: input.securityHeaders,
+                maxBodySizeMb: input.maxBodySizeMb,
+                version: detailQuery.data.version,
+              },
+            })}
+          />
+        )
       )}
 
       <Card className="overflow-hidden">
@@ -92,11 +157,12 @@ export function ProxyHostsPage() {
             value={search}
           />
         </div>
-        <div className="hidden grid-cols-[1.4fr_1fr_150px_110px] border-b bg-background/60 px-5 py-3 text-[10px] font-bold tracking-wider text-muted uppercase md:grid">
+        <div className="hidden grid-cols-[1.4fr_1fr_150px_110px_44px] border-b bg-background/60 px-5 py-3 text-[10px] font-bold tracking-wider text-muted uppercase md:grid">
           <span>Domain</span>
           <span>Backend pool</span>
           <span>Protection</span>
           <span>Status</span>
+          <span className="sr-only">Actions</span>
         </div>
         {hostsQuery.isPending ? (
           <div className="grid min-h-72 place-items-center font-mono text-xs text-muted">LOADING HOSTS</div>
@@ -105,7 +171,7 @@ export function ProxyHostsPage() {
         ) : hosts.length ? (
           <div className="divide-y">
             {hosts.map((host) => (
-              <div className="grid gap-3 px-5 py-4 md:grid-cols-[1.4fr_1fr_150px_110px] md:items-center" key={host.id}>
+              <div className="grid gap-3 px-5 py-4 md:grid-cols-[1.4fr_1fr_150px_110px_44px] md:items-center" key={host.id}>
                 <div>
                   <p className="font-semibold">{host.primaryDomain}</p>
                   <p className="mt-1 text-xs text-muted">{host.application} / {host.name}</p>
@@ -120,6 +186,15 @@ export function ProxyHostsPage() {
                   {host.rateLimitEnabled && <Badge tone="success">Rate limit</Badge>}
                 </div>
                 <ConfigurationBadge host={host} />
+                {host.canWrite ? (
+                  <Button
+                    aria-label={`Edit ${host.primaryDomain}`}
+                    onClick={() => { setCreating(false); setEditingHostID((current) => current === host.id ? '' : host.id) }}
+                    variant="ghost"
+                  >
+                    {editingHostID === host.id ? <X className="size-4" /> : <Pencil className="size-4" />}
+                  </Button>
+                ) : <span />}
               </div>
             ))}
           </div>
@@ -131,26 +206,31 @@ export function ProxyHostsPage() {
   )
 }
 
-function CreateHostForm({
+function HostForm({
   applications,
   disabled,
   error,
+  host,
+  onDelete,
   onSubmit,
 }: {
   applications: Array<{ id: string; name: string; canWrite: boolean }>
   disabled: boolean
   error: Error | null
-  onSubmit: (input: CreateProxyHostInput) => void
+  host?: ProxyHostDetail
+  onDelete?: () => void
+  onSubmit: (input: HostFormInput) => void
 }) {
-  const [backends, setBackends] = useState<UpstreamInput[]>([defaultBackend()])
-  const [rateLimitEnabled, setRateLimitEnabled] = useState(false)
-  const [wafMode, setWafMode] = useState<'off' | 'detect' | 'block'>('off')
+  const [backends, setBackends] = useState<UpstreamInput[]>(host?.upstreams.length ? host.upstreams : [defaultBackend()])
+  const [rateLimitEnabled, setRateLimitEnabled] = useState(host?.rateLimit.enabled ?? false)
+  const [wafMode, setWafMode] = useState<'off' | 'detect' | 'block'>(host?.waf.mode ?? 'off')
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const form = new FormData(event.currentTarget)
     onSubmit({
-      applicationId: String(form.get('applicationId') ?? ''),
+      applicationId: host?.applicationId ?? String(form.get('applicationId') ?? ''),
+      enabled: form.get('enabled') === 'on',
       name: String(form.get('name') ?? ''),
       primaryDomain: String(form.get('primaryDomain') ?? ''),
       domainAliases: String(form.get('domainAliases') ?? '').split(/[\s,]+/).filter(Boolean),
@@ -158,15 +238,15 @@ function CreateHostForm({
       loadBalancing: String(form.get('loadBalancing') ?? 'round_robin') as CreateProxyHostInput['loadBalancing'],
       rateLimit: {
         enabled: rateLimitEnabled,
-        requests: Number(form.get('rateRequests') ?? 60),
-        periodSeconds: Number(form.get('ratePeriod') ?? 60) as 1 | 60,
-        burst: Number(form.get('rateBurst') ?? 20),
+        requests: Number(form.get('rateRequests') ?? host?.rateLimit.requests ?? 60),
+        periodSeconds: Number(form.get('ratePeriod') ?? host?.rateLimit.periodSeconds ?? 60) as 1 | 60,
+        burst: Number(form.get('rateBurst') ?? host?.rateLimit.burst ?? 20),
         rejectStatus: 429,
         noDelay: true,
       },
       waf: {
         mode: wafMode,
-        paranoiaLevel: Number(form.get('wafParanoia') ?? 1),
+        paranoiaLevel: Number(form.get('wafParanoia') ?? host?.waf.paranoiaLevel ?? 1),
       },
       securityHeaders: form.get('securityHeaders') === 'on',
       maxBodySizeMb: Number(form.get('maxBodySizeMb') ?? 10),
@@ -182,17 +262,17 @@ function CreateHostForm({
       <form onSubmit={submit}>
         <div className="grid gap-4 p-5 md:grid-cols-2">
           <Field label="Application">
-            <select className="field" name="applicationId" required>
+            <select className="field" defaultValue={host?.applicationId} disabled={Boolean(host)} name="applicationId" required>
               {applications.filter((application) => application.canWrite).map((application) => (
                 <option key={application.id} value={application.id}>{application.name}</option>
               ))}
             </select>
           </Field>
           <Field label="Display name">
-            <input className="field" name="name" placeholder="Internal dashboard" required />
+            <input className="field" defaultValue={host?.name} name="name" placeholder="Internal dashboard" required />
           </Field>
           <Field label="Primary domain">
-            <input className="field" name="primaryDomain" placeholder="dashboard.example.com" required />
+            <input className="field" defaultValue={host?.primaryDomain} name="primaryDomain" placeholder="dashboard.example.com" required />
           </Field>
           <Field label="Backend URL">
             <input
@@ -206,7 +286,7 @@ function CreateHostForm({
           </Field>
         </div>
 
-        <details className="group border-t">
+        <details className="group border-t" open={Boolean(host)}>
           <summary className="flex cursor-pointer list-none items-center justify-between px-5 py-4 text-sm font-bold">
             <span className="flex items-center gap-2"><ShieldCheck className="size-4" /> Advanced routing and protection</span>
             <ChevronDown className="size-4 text-muted transition-transform group-open:rotate-180" />
@@ -237,7 +317,7 @@ function CreateHostForm({
               <div className="mt-3 flex flex-wrap items-end gap-3">
                 <Button onClick={() => setBackends((current) => [...current, defaultBackend()])} type="button"><Plus className="size-4" /> Add backend</Button>
                 <Field label="Load balancing">
-                  <select className="field min-w-44" name="loadBalancing">
+                  <select className="field min-w-44" defaultValue={host?.loadBalancing ?? 'round_robin'} name="loadBalancing">
                     <option value="round_robin">Round robin</option>
                     <option value="least_conn">Least connections</option>
                     <option value="ip_hash">IP hash</option>
@@ -248,11 +328,11 @@ function CreateHostForm({
 
             <section className="grid gap-4 border-t pt-6 md:grid-cols-2">
               <Field label="Domain aliases">
-                <textarea className="field min-h-24 py-2" name="domainAliases" placeholder="www.example.com, api.example.com" />
+                <textarea className="field min-h-24 py-2" defaultValue={host?.domainAliases.join(', ')} name="domainAliases" placeholder="www.example.com, api.example.com" />
               </Field>
               <Field label="Maximum request body">
                 <div className="relative">
-                  <input className="field pr-12" defaultValue="10" max="10240" min="1" name="maxBodySizeMb" type="number" />
+                  <input className="field pr-12" defaultValue={host?.maxBodySizeMb ?? 10} max="10240" min="1" name="maxBodySizeMb" type="number" />
                   <span className="pointer-events-none absolute inset-y-0 right-3 grid place-items-center text-xs text-muted">MB</span>
                 </div>
               </Field>
@@ -265,9 +345,9 @@ function CreateHostForm({
                   <input checked={rateLimitEnabled} onChange={(event) => setRateLimitEnabled(event.target.checked)} type="checkbox" />
                 </label>
                 <div className="mt-4 grid grid-cols-3 gap-3">
-                  <Field label="Requests"><input className="field" defaultValue="60" disabled={!rateLimitEnabled} min="1" name="rateRequests" type="number" /></Field>
-                  <Field label="Period"><select className="field" disabled={!rateLimitEnabled} name="ratePeriod"><option value="60">Minute</option><option value="1">Second</option></select></Field>
-                  <Field label="Burst"><input className="field" defaultValue="20" disabled={!rateLimitEnabled} min="0" name="rateBurst" type="number" /></Field>
+                  <Field label="Requests"><input className="field" defaultValue={host?.rateLimit.requests || 60} disabled={!rateLimitEnabled} min="1" name="rateRequests" type="number" /></Field>
+                  <Field label="Period"><select className="field" defaultValue={host?.rateLimit.periodSeconds || 60} disabled={!rateLimitEnabled} name="ratePeriod"><option value="60">Minute</option><option value="1">Second</option></select></Field>
+                  <Field label="Burst"><input className="field" defaultValue={host?.rateLimit.burst ?? 20} disabled={!rateLimitEnabled} min="0" name="rateBurst" type="number" /></Field>
                 </div>
               </div>
               <div className="rounded-lg border bg-surface p-4">
@@ -281,20 +361,27 @@ function CreateHostForm({
                 <div className="mt-3">
                   <p className="text-xs leading-5 text-muted">Detection and blocking use the managed OWASP CRS baseline installed on the gateway.</p>
                 </div>
+                {wafMode !== 'off' && <div className="mt-3"><Field label="Paranoia level"><input className="field" defaultValue={host?.waf.paranoiaLevel || 1} max="4" min="1" name="wafParanoia" type="number" /></Field></div>}
               </div>
             </section>
 
-            <label className="flex items-center gap-3 text-sm font-semibold">
-              <input defaultChecked name="securityHeaders" type="checkbox" /> Add safe security headers
-            </label>
+            <div className="flex flex-wrap gap-5">
+              <label className="flex items-center gap-3 text-sm font-semibold">
+                <input defaultChecked={host?.securityHeaders ?? true} name="securityHeaders" type="checkbox" /> Add safe security headers
+              </label>
+              <label className="flex items-center gap-3 text-sm font-semibold">
+                <input defaultChecked={host?.enabled ?? true} name="enabled" type="checkbox" /> Route enabled
+              </label>
+            </div>
           </div>
         </details>
 
         <div className="flex flex-col gap-3 border-t px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-xs text-muted">Save validates the generated configuration and applies it without interrupting existing traffic.</p>
           <div className="flex items-center justify-end gap-3">
-            {error && <p className="text-sm text-danger" role="alert">{error instanceof APIError ? error.message : 'Unable to create proxy host'}</p>}
-            <Button disabled={disabled} type="submit" variant="primary"><Plus className="size-4" /> {disabled ? 'Saving & applying…' : 'Create & apply'}</Button>
+            {error && <p className="text-sm text-danger" role="alert">{error instanceof APIError ? error.message : 'Unable to save proxy host'}</p>}
+            {host && <Button disabled={disabled} onClick={onDelete} type="button"><Trash2 className="size-4" /> Delete</Button>}
+            <Button disabled={disabled} type="submit" variant="primary">{host ? <Pencil className="size-4" /> : <Plus className="size-4" />} {disabled ? 'Saving & applying…' : host ? 'Save & apply' : 'Create & apply'}</Button>
           </div>
         </div>
       </form>
@@ -331,7 +418,7 @@ function SaveResult({ host, result }: { host?: ProxyHost; result: CreateProxyHos
   return (
     <Card className={`border-l-4 p-4 ${failed ? 'border-l-red-500' : waiting ? 'border-l-amber-400' : 'border-l-emerald-400'}`}>
       <p className="text-sm font-bold">
-        {failed ? 'Host saved, configuration rejected' : waiting ? 'Host saved, gateway reconciliation continues' : 'Host created and active'}
+        {failed ? 'Host saved, configuration rejected' : waiting ? 'Host saved, gateway reconciliation continues' : 'Host active'}
       </p>
       <p className="mt-1 text-xs leading-5 text-muted">
         {failed
@@ -358,4 +445,12 @@ function ConfigurationBadge({ host }: { host: ProxyHost }) {
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return <label className="text-sm font-semibold">{label}<span className="mt-2 block">{children}</span></label>
+}
+
+async function invalidateGatewayQueries(queryClient: QueryClient) {
+  await Promise.all([
+    queryClient.invalidateQueries({ queryKey: ['proxy-hosts'] }),
+    queryClient.invalidateQueries({ queryKey: ['overview'] }),
+    queryClient.invalidateQueries({ queryKey: ['deployments'] }),
+  ])
 }

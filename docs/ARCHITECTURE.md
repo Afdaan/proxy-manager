@@ -28,6 +28,11 @@ lock, so concurrent users and multiple server instances cannot apply revisions
 out of order. Temporary agent failures retry while permanent validation errors
 remain visible for operator correction.
 
+Proxy Host create, update, disable, and delete operations all use this mutation
+path. Updates use optimistic record versions; deletes remove the desired route
+before generating the next full revision. The active NGINX revision remains
+unchanged until the replacement validates and reloads successfully.
+
 ## Agent
 
 The agent stays small because it runs with elevated permissions:

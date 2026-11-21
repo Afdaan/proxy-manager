@@ -85,6 +85,7 @@ export interface ProxyHost {
   tlsMode: string
   wafMode: string
   rateLimitEnabled: boolean
+  canWrite: boolean
   configurationStatus: 'pending' | 'applying' | 'retrying' | 'active' | 'failed'
   configurationError?: string
   version: number
@@ -119,6 +120,31 @@ export interface CreateProxyHostInput {
   }
   securityHeaders: boolean
   maxBodySizeMb: number
+}
+
+export interface ProxyHostDetail {
+  id: string
+  applicationId: string
+  application: string
+  name: string
+  enabled: boolean
+  primaryDomain: string
+  domainAliases: string[]
+  upstreams: UpstreamInput[]
+  loadBalancing: ProxyHost['loadBalancing']
+  tls: { mode: string; email?: string; ready: boolean; redirectHttp: boolean }
+  rateLimit: CreateProxyHostInput['rateLimit']
+  waf: CreateProxyHostInput['waf']
+  geo: { mode: 'off' | 'allow' | 'block'; countries?: string[] }
+  access: { allowedCidrs?: string[]; deniedCidrs?: string[] }
+  securityHeaders: boolean
+  maxBodySizeMb: number
+  version: number
+}
+
+export type UpdateProxyHostInput = Omit<CreateProxyHostInput, 'applicationId'> & {
+  enabled: boolean
+  version: number
 }
 
 export interface Deployment {
@@ -184,6 +210,26 @@ export function createProxyHost(input: CreateProxyHostInput): Promise<CreateProx
     method: 'POST',
     body: JSON.stringify(input),
   })
+}
+
+export async function getProxyHost(proxyHostId: string): Promise<ProxyHostDetail> {
+  const result = await request<{ proxyHost: ProxyHostDetail }>(`/api/v1/proxy-hosts/${encodeURIComponent(proxyHostId)}`)
+  return result.proxyHost
+}
+
+export function updateProxyHost(proxyHostId: string, input: UpdateProxyHostInput): Promise<CreateProxyHostResult> {
+  return request<CreateProxyHostResult>(`/api/v1/proxy-hosts/${encodeURIComponent(proxyHostId)}`, {
+    method: 'PUT',
+    body: JSON.stringify(input),
+  })
+}
+
+export async function deleteProxyHost(proxyHostId: string, version: number): Promise<Deployment> {
+  const result = await request<{ deployment: Deployment }>(`/api/v1/proxy-hosts/${encodeURIComponent(proxyHostId)}`, {
+    method: 'DELETE',
+    body: JSON.stringify({ version }),
+  })
+  return result.deployment
 }
 
 export async function getDeployments(): Promise<Deployment[]> {

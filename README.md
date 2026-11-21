@@ -84,6 +84,11 @@ The Overview page shows configuration history and exposes a retry action only
 when a revision fails permanently. A normal save requires no separate deploy
 step.
 
+Editing, enabling, disabling, or deleting a Proxy Host follows the same path.
+Every mutation checks the record version, writes an audit event, creates a new
+complete gateway revision, validates it, and atomically activates it. A stale
+browser cannot silently overwrite a newer change.
+
 ## Access management
 
 The bootstrap account is the first platform administrator. Platform

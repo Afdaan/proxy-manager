@@ -204,6 +204,12 @@ func readSymlinkIfExists(path string) (string, error) {
 	if errors.Is(err, os.ErrNotExist) {
 		return "", nil
 	}
+	if err != nil {
+		information, statErr := os.Lstat(path)
+		if statErr == nil && information.Mode().IsRegular() && information.Size() == 0 {
+			return "", nil
+		}
+	}
 	return target, err
 }
 

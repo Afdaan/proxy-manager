@@ -493,18 +493,18 @@ GET  /api/v1/deployments/current
 POST /api/v1/deployments/{id}/rollback
 ```
 
-Deployment requests require an explicit permission. Rollback requires platform administration for the first release.
+Proxy Host write permission queues the matching gateway revision automatically.
+Rollback requires platform administration for the first release.
 
-## Phase 4: Deployment UI
+## Phase 4: Reconciliation UI
 
-Add a small deployment workflow instead of automatically applying every edit.
+Apply desired-state edits automatically while keeping revision state visible.
 
 UI behavior:
 
-- Show `Changes not deployed` after desired-state edits.
+- Show applying, retrying, active, failed, superseded, and rolled-back states.
 - Show the latest active generation and deployment time.
-- Provide a `Deploy changes` button to authorized users.
-- Show queued, validating, applying, active, failed, and rolled-back states.
+- Provide a retry action only after permanent failure.
 - Display safe validation errors without leaking tokens or filesystem internals.
 - Show the deployment summary and affected Proxy Hosts.
 - Provide rollback for platform administrators.

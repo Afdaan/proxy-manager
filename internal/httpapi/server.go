@@ -21,8 +21,8 @@ import (
 
 type Server struct {
 	AgentSocket  string
-	AgentToken   string
 	CookieSecure bool
+	Reconciler   *Reconciler
 	Store        *store.Store
 	WebRoot      string
 }
@@ -83,10 +83,14 @@ func (server Server) overview(response http.ResponseWriter, request *http.Reques
 }
 
 func (server Server) agentClient() *http.Client {
+	return newAgentClient(server.AgentSocket)
+}
+
+func newAgentClient(socket string) *http.Client {
 	dialer := &net.Dialer{Timeout: 2 * time.Second}
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return dialer.DialContext(ctx, "unix", server.AgentSocket)
+			return dialer.DialContext(ctx, "unix", socket)
 		},
 	}
 	return &http.Client{Transport: transport, Timeout: 40 * time.Second}

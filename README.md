@@ -71,11 +71,18 @@ with access limited to NGINX, Certbot, and its own state directories.
 
 The agent intentionally refuses to start without `PROXY_MANAGER_AGENT_TOKEN`. It should run only on the gateway host under systemd.
 
-## Deploy proxy hosts
+## Apply proxy hosts
 
-Creating or editing a Proxy Host only saves desired state in PostgreSQL. Open
-the Overview page and select **Deploy changes** to validate and activate the
-complete gateway configuration.
+Saving a Proxy Host writes the desired state and a durable reconciliation job
+in one PostgreSQL transaction. The server immediately validates and applies the
+new complete gateway configuration. Concurrent saves are serialized by
+PostgreSQL locks, stale revisions cannot replace newer revisions, and temporary
+agent failures retry automatically. NGINX keeps serving the last valid revision
+until a newer revision passes validation and reloads successfully.
+
+The Overview page shows configuration history and exposes a retry action only
+when a revision fails permanently. A normal save requires no separate deploy
+step.
 
 Each successful deployment creates an immutable revision:
 

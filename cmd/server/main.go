@@ -17,36 +17,43 @@ import (
 )
 
 func main() {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	startupCtx, startupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer startupCancel()
 
 	databaseURL := os.Getenv("PROXY_MANAGER_DATABASE_URL")
 	if databaseURL == "" {
 		slog.Error("PROXY_MANAGER_DATABASE_URL is required")
 		os.Exit(1)
 	}
-	dataStore, err := store.Open(ctx, databaseURL)
+	dataStore, err := store.Open(startupCtx, databaseURL)
 	if err != nil {
 		slog.Error("open database", "error", err)
 		os.Exit(1)
 	}
 	defer dataStore.Close()
-	if err := database.Migrate(ctx, dataStore.Pool); err != nil {
+	if err := database.Migrate(startupCtx, dataStore.Pool); err != nil {
 		slog.Error("migrate database", "error", err)
 		os.Exit(1)
 	}
-	if err := bootstrap(ctx, dataStore); err != nil {
+	if err := bootstrap(startupCtx, dataStore); err != nil {
 		slog.Error("bootstrap administrator", "error", err)
 		os.Exit(1)
 	}
+
+	runtimeCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	agentSocket := valueOrDefault("PROXY_MANAGER_AGENT_SOCKET", "/run/proxy-manager/agent.sock")
+	agentToken := os.Getenv("PROXY_MANAGER_AGENT_TOKEN")
+	reconciler := httpapi.NewReconciler(dataStore, agentSocket, agentToken)
+	go reconciler.Run(runtimeCtx)
 
 	address := valueOrDefault("PROXY_MANAGER_HTTP_ADDRESS", "127.0.0.1:8080")
 	server := &http.Server{
 		Addr: address,
 		Handler: httpapi.Server{
-			AgentSocket:  valueOrDefault("PROXY_MANAGER_AGENT_SOCKET", "/run/proxy-manager/agent.sock"),
-			AgentToken:   os.Getenv("PROXY_MANAGER_AGENT_TOKEN"),
+			AgentSocket:  agentSocket,
 			CookieSecure: boolValue("PROXY_MANAGER_COOKIE_SECURE", true),
+			Reconciler:   reconciler,
 			Store:        dataStore,
 			WebRoot:      valueOrDefault("PROXY_MANAGER_WEB_ROOT", "apps/web/dist"),
 		}.Routes(),
@@ -57,9 +64,7 @@ func main() {
 	}
 
 	go func() {
-		signals := make(chan os.Signal, 1)
-		signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
-		<-signals
+		<-runtimeCtx.Done()
 		shutdownContext, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer shutdownCancel()
 		if err := server.Shutdown(shutdownContext); err != nil {

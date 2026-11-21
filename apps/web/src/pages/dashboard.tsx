@@ -5,9 +5,9 @@ import {
   Ban,
   CheckCircle2,
   Clock3,
-  CloudUpload,
   KeyRound,
   Network,
+  RefreshCw,
   ShieldCheck,
   TerminalSquare,
   XCircle,
@@ -35,8 +35,16 @@ const fallbackFeatures: FeatureStatus[] = [
 export function DashboardPage() {
   const queryClient = useQueryClient()
   const overviewQuery = useQuery({ queryKey: ['overview'], queryFn: getSystemOverview })
-  const deploymentsQuery = useQuery({ queryKey: ['deployments'], queryFn: getDeployments, retry: false })
-  const deployMutation = useMutation({
+  const deploymentsQuery = useQuery({
+    queryKey: ['deployments'],
+    queryFn: getDeployments,
+    retry: false,
+    refetchInterval: (query) => {
+      const status = query.state.data?.[0]?.status
+      return status && ['queued', 'validating', 'applying', 'retrying'].includes(status) ? 3000 : false
+    },
+  })
+  const retryMutation = useMutation({
     mutationFn: createDeployment,
     onSettled: async () => {
       await queryClient.invalidateQueries({ queryKey: ['deployments'] })
@@ -75,11 +83,11 @@ export function DashboardPage() {
         <DeploymentPanel
           agentOnline={overview.agentStatus === 'online'}
           canDeploy={canDeploy}
-          error={deployMutation.error}
+          error={retryMutation.error}
           latest={latestDeployment}
           loading={deploymentsQuery.isPending}
-          pending={deployMutation.isPending}
-          onDeploy={() => deployMutation.mutate()}
+          pending={retryMutation.isPending}
+          onRetry={() => retryMutation.mutate()}
         />
       </section>
 
@@ -169,7 +177,7 @@ function DeploymentPanel({
   latest,
   loading,
   pending,
-  onDeploy,
+  onRetry,
 }: {
   agentOnline: boolean
   canDeploy: boolean
@@ -177,20 +185,20 @@ function DeploymentPanel({
   latest?: Deployment
   loading: boolean
   pending: boolean
-  onDeploy: () => void
+  onRetry: () => void
 }) {
   return (
     <Card className="overflow-hidden">
       <div className="flex items-start justify-between gap-4 border-b px-5 py-4">
         <div>
-          <h3 className="font-bold">Gateway deployment</h3>
-          <p className="mt-1 text-xs leading-5 text-muted">Validate, activate, and retain one immutable NGINX revision.</p>
+          <h3 className="font-bold">NGINX configuration</h3>
+          <p className="mt-1 text-xs leading-5 text-muted">Saved changes reconcile automatically into one validated, immutable revision.</p>
         </div>
         {latest && <DeploymentBadge status={latest.status} />}
       </div>
       <div className="p-5">
         {loading ? (
-          <p className="font-mono text-xs text-muted">LOADING DEPLOYMENT STATE</p>
+          <p className="font-mono text-xs text-muted">LOADING CONFIGURATION STATE</p>
         ) : latest ? (
           <div>
             <p className="text-xs font-bold tracking-wide text-muted uppercase">Latest revision</p>
@@ -199,18 +207,21 @@ function DeploymentPanel({
             {latest.errorMessage && <p className="mt-3 rounded-md border border-red-500/30 bg-red-500/10 p-3 text-xs leading-5 text-danger">{latest.errorMessage}</p>}
           </div>
         ) : (
-          <p className="text-sm leading-6 text-muted">No revision has been deployed. Saved proxy hosts are not serving traffic yet.</p>
+          <p className="text-sm leading-6 text-muted">No configuration revision exists yet. Creating a proxy host will apply the first revision automatically.</p>
         )}
         {error && (
           <p className="mt-3 text-xs text-danger" role="alert">
-            {error instanceof APIError ? error.message : 'Deployment failed'}
+            {error instanceof APIError ? error.message : 'Configuration retry failed'}
           </p>
         )}
-        <Button className="mt-5 w-full" disabled={!agentOnline || !canDeploy || pending} onClick={onDeploy} variant="primary">
-          <CloudUpload className="size-4" /> {pending ? 'Deploying…' : 'Deploy changes'}
-        </Button>
-        {!agentOnline && <p className="mt-2 text-center text-[11px] text-muted">Gateway agent must be online before deployment.</p>}
-        {!canDeploy && <p className="mt-2 text-center text-[11px] text-muted">Your role cannot deploy gateway configuration.</p>}
+        {latest?.status === 'failed' && (
+          <Button className="mt-5 w-full" disabled={!agentOnline || !canDeploy || pending} onClick={onRetry} variant="primary">
+            <RefreshCw className="size-4" /> {pending ? 'Retrying…' : 'Retry configuration'}
+          </Button>
+        )}
+        {latest?.status === 'retrying' && <p className="mt-4 text-xs leading-5 text-muted">The gateway is temporarily unavailable. Retry runs automatically while the last valid revision remains active.</p>}
+        {latest?.status === 'failed' && !agentOnline && <p className="mt-2 text-center text-[11px] text-muted">Gateway agent must be online before retrying.</p>}
+        {latest?.status === 'failed' && !canDeploy && <p className="mt-2 text-center text-[11px] text-muted">Your role cannot retry gateway configuration.</p>}
       </div>
     </Card>
   )

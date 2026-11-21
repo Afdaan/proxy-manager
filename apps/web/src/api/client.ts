@@ -38,6 +38,8 @@ export interface ProxyHost {
   tlsMode: string
   wafMode: string
   rateLimitEnabled: boolean
+  configurationStatus: 'pending' | 'applying' | 'retrying' | 'active' | 'failed'
+  configurationError?: string
   version: number
 }
 
@@ -76,11 +78,16 @@ export interface Deployment {
   id: string
   generation: number
   revision: string
-  status: 'queued' | 'validating' | 'applying' | 'succeeded' | 'failed' | 'rolled_back'
+  status: 'queued' | 'validating' | 'applying' | 'retrying' | 'succeeded' | 'failed' | 'superseded' | 'rolled_back'
   errorMessage?: string
   startedAt?: string
   finishedAt?: string
   createdAt: string
+}
+
+export interface CreateProxyHostResult {
+  proxyHost: ProxyHost
+  deployment: Deployment
 }
 
 export class APIError extends Error {
@@ -125,12 +132,11 @@ export async function getProxyHosts(): Promise<ProxyHost[]> {
   return result.proxyHosts
 }
 
-export async function createProxyHost(input: CreateProxyHostInput): Promise<ProxyHost> {
-  const result = await request<{ proxyHost: ProxyHost }>('/api/v1/proxy-hosts', {
+export function createProxyHost(input: CreateProxyHostInput): Promise<CreateProxyHostResult> {
+  return request<CreateProxyHostResult>('/api/v1/proxy-hosts', {
     method: 'POST',
     body: JSON.stringify(input),
   })
-  return result.proxyHost
 }
 
 export async function getDeployments(): Promise<Deployment[]> {

@@ -23,27 +23,27 @@ type Deployment struct {
 	CreatedAt    time.Time  `json:"createdAt"`
 }
 
+type PreparedDeployment struct {
+	Deployment Deployment
+	Config     model.GatewayConfig
+	Process    bool
+}
+
 type CreateDeploymentParams struct {
 	RequestID string
 	SourceIP  string
 }
 
 func (store *Store) CreateDeployment(ctx context.Context, userID string, params CreateDeploymentParams) (Deployment, model.GatewayConfig, error) {
-	deploymentID, err := randomUUID()
-	if err != nil {
-		return Deployment{}, model.GatewayConfig{}, err
-	}
-	revisionID, err := randomUUID()
-	if err != nil {
-		return Deployment{}, model.GatewayConfig{}, err
-	}
-
-	transaction, err := store.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	transaction, err := store.Pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return Deployment{}, model.GatewayConfig{}, fmt.Errorf("begin deployment: %w", err)
 	}
 	defer transaction.Rollback(ctx) //nolint:errcheck
 
+	if err := lockGatewayMutation(ctx, transaction); err != nil {
+		return Deployment{}, model.GatewayConfig{}, err
+	}
 	allowed, err := hasDeploymentPermission(ctx, transaction, userID)
 	if err != nil {
 		return Deployment{}, model.GatewayConfig{}, err
@@ -51,8 +51,24 @@ func (store *Store) CreateDeployment(ctx context.Context, userID string, params 
 	if !allowed {
 		return Deployment{}, model.GatewayConfig{}, ErrForbidden
 	}
-	if _, err := transaction.Exec(ctx, "SELECT pg_advisory_xact_lock(742198533)"); err != nil {
-		return Deployment{}, model.GatewayConfig{}, fmt.Errorf("lock deployment generation: %w", err)
+	deployment, config, err := createDeploymentRecord(ctx, transaction, userID, params)
+	if err != nil {
+		return Deployment{}, model.GatewayConfig{}, err
+	}
+	if err := transaction.Commit(ctx); err != nil {
+		return Deployment{}, model.GatewayConfig{}, fmt.Errorf("commit deployment: %w", err)
+	}
+	return deployment, config, nil
+}
+
+func createDeploymentRecord(ctx context.Context, transaction pgx.Tx, userID string, params CreateDeploymentParams) (Deployment, model.GatewayConfig, error) {
+	deploymentID, err := randomUUID()
+	if err != nil {
+		return Deployment{}, model.GatewayConfig{}, err
+	}
+	revisionID, err := randomUUID()
+	if err != nil {
+		return Deployment{}, model.GatewayConfig{}, err
 	}
 
 	var generation uint64
@@ -92,10 +108,6 @@ func (store *Store) CreateDeployment(ctx context.Context, userID string, params 
 	); err != nil {
 		return Deployment{}, model.GatewayConfig{}, fmt.Errorf("write deployment audit log: %w", err)
 	}
-	if err := transaction.Commit(ctx); err != nil {
-		return Deployment{}, model.GatewayConfig{}, fmt.Errorf("commit deployment: %w", err)
-	}
-
 	return Deployment{
 		ID:         deploymentID,
 		Generation: generation,
@@ -105,14 +117,227 @@ func (store *Store) CreateDeployment(ctx context.Context, userID string, params 
 	}, config, nil
 }
 
+func lockGatewayMutation(ctx context.Context, transaction pgx.Tx) error {
+	if _, err := transaction.Exec(ctx, "SELECT pg_advisory_xact_lock(742198533)"); err != nil {
+		return fmt.Errorf("lock gateway mutation: %w", err)
+	}
+	return nil
+}
+
 func (store *Store) TransitionDeployment(ctx context.Context, deploymentID, expectedStatus, nextStatus, errorMessage string) (Deployment, error) {
+	transaction, err := store.Pool.Begin(ctx)
+	if err != nil {
+		return Deployment{}, fmt.Errorf("begin deployment transition: %w", err)
+	}
+	defer transaction.Rollback(ctx) //nolint:errcheck
+
+	deployment, err := transitionDeploymentTx(ctx, transaction, deploymentID, expectedStatus, nextStatus, errorMessage)
+	if err != nil {
+		return Deployment{}, err
+	}
+	if err := transaction.Commit(ctx); err != nil {
+		return Deployment{}, fmt.Errorf("commit deployment transition: %w", err)
+	}
+	return deployment, nil
+}
+
+func (store *Store) PrepareDeployment(ctx context.Context, deploymentID string) (PreparedDeployment, error) {
+	transaction, err := store.Pool.Begin(ctx)
+	if err != nil {
+		return PreparedDeployment{}, fmt.Errorf("begin deployment preparation: %w", err)
+	}
+	defer transaction.Rollback(ctx) //nolint:errcheck
+
+	var prepared PreparedDeployment
+	var desiredState []byte
+	err = transaction.QueryRow(ctx, `
+		SELECT deployment_runs.id,
+		       config_revisions.generation,
+		       config_revisions.revision,
+		       deployment_runs.status,
+		       COALESCE(deployment_runs.error_message, ''),
+		       deployment_runs.started_at,
+		       deployment_runs.finished_at,
+		       deployment_runs.created_at,
+		       config_revisions.desired_state
+		FROM deployment_runs
+		JOIN config_revisions ON config_revisions.id = deployment_runs.config_revision_id
+		WHERE deployment_runs.id = $1
+		FOR UPDATE`, deploymentID).Scan(
+		&prepared.Deployment.ID,
+		&prepared.Deployment.Generation,
+		&prepared.Deployment.Revision,
+		&prepared.Deployment.Status,
+		&prepared.Deployment.ErrorMessage,
+		&prepared.Deployment.StartedAt,
+		&prepared.Deployment.FinishedAt,
+		&prepared.Deployment.CreatedAt,
+		&desiredState,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return PreparedDeployment{}, ErrNotFound
+	}
+	if err != nil {
+		return PreparedDeployment{}, fmt.Errorf("load deployment: %w", err)
+	}
+	if deploymentFinished(prepared.Deployment.Status) {
+		if err := transaction.Commit(ctx); err != nil {
+			return PreparedDeployment{}, fmt.Errorf("commit deployment read: %w", err)
+		}
+		return prepared, nil
+	}
+
+	var newerExists bool
+	if err := transaction.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM config_revisions WHERE generation > $1)`,
+		prepared.Deployment.Generation,
+	).Scan(&newerExists); err != nil {
+		return PreparedDeployment{}, fmt.Errorf("check newer deployment: %w", err)
+	}
+	if newerExists && prepared.Deployment.Status != "applying" {
+		prepared.Deployment, err = transitionDeploymentTx(ctx, transaction, deploymentID, prepared.Deployment.Status, "superseded", "newer gateway configuration is available")
+		if err != nil {
+			return PreparedDeployment{}, err
+		}
+		if err := transaction.Commit(ctx); err != nil {
+			return PreparedDeployment{}, fmt.Errorf("commit superseded deployment: %w", err)
+		}
+		return prepared, nil
+	}
+
+	err = transaction.QueryRow(ctx, `
+		UPDATE deployment_runs
+		SET status = 'validating',
+		    error_message = NULL,
+		    attempt_count = attempt_count + 1,
+		    started_at = COALESCE(started_at, now()),
+		    finished_at = NULL,
+		    updated_at = now()
+		FROM config_revisions
+		WHERE deployment_runs.id = $1
+		  AND config_revisions.id = deployment_runs.config_revision_id
+		RETURNING deployment_runs.id,
+		          config_revisions.generation,
+		          config_revisions.revision,
+		          deployment_runs.status,
+		          COALESCE(deployment_runs.error_message, ''),
+		          deployment_runs.started_at,
+		          deployment_runs.finished_at,
+		          deployment_runs.created_at`, deploymentID).Scan(
+		&prepared.Deployment.ID,
+		&prepared.Deployment.Generation,
+		&prepared.Deployment.Revision,
+		&prepared.Deployment.Status,
+		&prepared.Deployment.ErrorMessage,
+		&prepared.Deployment.StartedAt,
+		&prepared.Deployment.FinishedAt,
+		&prepared.Deployment.CreatedAt,
+	)
+	if err != nil {
+		return PreparedDeployment{}, fmt.Errorf("claim deployment: %w", err)
+	}
+	if err := json.Unmarshal(desiredState, &prepared.Config); err != nil {
+		return PreparedDeployment{}, fmt.Errorf("decode desired state: %w", err)
+	}
+	prepared.Process = true
+	if err := transaction.Commit(ctx); err != nil {
+		return PreparedDeployment{}, fmt.Errorf("commit deployment preparation: %w", err)
+	}
+	return prepared, nil
+}
+
+func (store *Store) NextDeploymentID(ctx context.Context) (string, error) {
+	var deploymentID string
+	err := store.Pool.QueryRow(ctx, `
+		SELECT deployment_runs.id
+		FROM deployment_runs
+		JOIN config_revisions ON config_revisions.id = deployment_runs.config_revision_id
+		WHERE deployment_runs.status IN ('queued', 'validating', 'applying', 'retrying')
+		  AND deployment_runs.next_attempt_at <= now()
+		ORDER BY config_revisions.generation DESC
+		LIMIT 1`).Scan(&deploymentID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("find pending deployment: %w", err)
+	}
+	return deploymentID, nil
+}
+
+func (store *Store) RetryDeployment(ctx context.Context, deploymentID, expectedStatus, errorMessage string, nextAttempt time.Time) (Deployment, error) {
 	var deployment Deployment
 	err := store.Pool.QueryRow(ctx, `
+		UPDATE deployment_runs
+		SET status = 'retrying',
+		    error_message = NULLIF($3, ''),
+		    next_attempt_at = $4,
+		    finished_at = NULL,
+		    updated_at = now()
+		FROM config_revisions
+		WHERE deployment_runs.id = $1
+		  AND deployment_runs.status = $2
+		  AND config_revisions.id = deployment_runs.config_revision_id
+		RETURNING deployment_runs.id,
+		          config_revisions.generation,
+		          config_revisions.revision,
+		          deployment_runs.status,
+		          COALESCE(deployment_runs.error_message, ''),
+		          deployment_runs.started_at,
+		          deployment_runs.finished_at,
+		          deployment_runs.created_at`,
+		deploymentID, expectedStatus, boundedError(errorMessage), nextAttempt,
+	).Scan(
+		&deployment.ID,
+		&deployment.Generation,
+		&deployment.Revision,
+		&deployment.Status,
+		&deployment.ErrorMessage,
+		&deployment.StartedAt,
+		&deployment.FinishedAt,
+		&deployment.CreatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Deployment{}, ErrConflict
+	}
+	if err != nil {
+		return Deployment{}, fmt.Errorf("schedule deployment retry: %w", err)
+	}
+	return deployment, nil
+}
+
+func (store *Store) CompleteDeployment(ctx context.Context, deploymentID string) (Deployment, error) {
+	transaction, err := store.Pool.Begin(ctx)
+	if err != nil {
+		return Deployment{}, fmt.Errorf("begin deployment completion: %w", err)
+	}
+	defer transaction.Rollback(ctx) //nolint:errcheck
+
+	deployment, err := transitionDeploymentTx(ctx, transaction, deploymentID, "applying", "succeeded", "")
+	if err != nil {
+		return Deployment{}, err
+	}
+	if _, err := transaction.Exec(ctx, `
+		UPDATE gateway_state
+		SET active_generation = $1, updated_at = now()
+		WHERE singleton = true`, deployment.Generation); err != nil {
+		return Deployment{}, fmt.Errorf("record active generation: %w", err)
+	}
+	if err := transaction.Commit(ctx); err != nil {
+		return Deployment{}, fmt.Errorf("commit deployment completion: %w", err)
+	}
+	return deployment, nil
+}
+
+func transitionDeploymentTx(ctx context.Context, transaction pgx.Tx, deploymentID, expectedStatus, nextStatus, errorMessage string) (Deployment, error) {
+	var deployment Deployment
+	err := transaction.QueryRow(ctx, `
 		UPDATE deployment_runs
 		SET status = $3,
 		    error_message = NULLIF($4, ''),
 		    started_at = CASE WHEN $3 IN ('validating', 'applying') THEN COALESCE(started_at, now()) ELSE started_at END,
-		    finished_at = CASE WHEN $3 IN ('succeeded', 'failed', 'rolled_back') THEN now() ELSE NULL END
+		    finished_at = CASE WHEN $3 IN ('succeeded', 'failed', 'superseded', 'rolled_back') THEN now() ELSE NULL END,
+		    updated_at = now()
 		FROM config_revisions
 		WHERE deployment_runs.id = $1
 		  AND deployment_runs.status = $2
@@ -143,6 +368,10 @@ func (store *Store) TransitionDeployment(ctx context.Context, deploymentID, expe
 		return Deployment{}, fmt.Errorf("transition deployment: %w", err)
 	}
 	return deployment, nil
+}
+
+func deploymentFinished(status string) bool {
+	return status == "succeeded" || status == "failed" || status == "superseded" || status == "rolled_back"
 }
 
 func (store *Store) ListDeployments(ctx context.Context, userID string, limit int) ([]Deployment, error) {
@@ -367,7 +596,7 @@ const deploymentPermissionQuery = `
 	    FROM application_memberships
 	    JOIN role_permissions ON role_permissions.role_id = application_memberships.role_id
 	    WHERE application_memberships.user_id = $1
-	      AND role_permissions.permission_name = 'deployments.write'
+	      AND role_permissions.permission_name IN ('proxy_hosts.write', 'deployments.write')
 	)`
 
 func shortIdentifier(identifier string) string {

@@ -5,9 +5,9 @@ import { Card } from '../components/ui/card'
 
 const permissions = [
   ['View application', true, true, true, true],
-  ['Edit proxy hosts', true, true, true, false],
+  ['Edit proxy hosts and apply', true, true, true, false],
   ['Manage security policy', true, true, false, false],
-  ['Deploy and rollback', true, true, true, false],
+  ['Retry and rollback', true, true, true, false],
   ['Manage members', true, false, false, false],
 ] as const
 

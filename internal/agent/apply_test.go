@@ -76,6 +76,31 @@ func TestApplyWritesBundleAtomicallyAndIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestApplyReplacesEmptyBootstrapConfig(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	applier := newTestApplier(root, &recordingRunner{})
+	if err := os.MkdirAll(filepath.Dir(applier.ActiveConfigPath), 0o755); err != nil {
+		t.Fatalf("create active config directory: %v", err)
+	}
+	if err := os.WriteFile(applier.ActiveConfigPath, nil, 0o640); err != nil {
+		t.Fatalf("create bootstrap config: %v", err)
+	}
+
+	config := testConfig(1, "2026-11-21_03-30-42Z--rev-1--first1")
+	if err := applier.Apply(context.Background(), config); err != nil {
+		t.Fatalf("apply first revision: %v", err)
+	}
+	activeTarget, err := os.Readlink(applier.ActiveConfigPath)
+	if err != nil {
+		t.Fatalf("read active config symlink: %v", err)
+	}
+	if !strings.Contains(activeTarget, config.Revision) {
+		t.Fatalf("unexpected active target %q", activeTarget)
+	}
+}
+
 func TestFailedValidationRestoresPreviousRevision(t *testing.T) {
 	t.Parallel()
 

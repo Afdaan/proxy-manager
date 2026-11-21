@@ -16,10 +16,17 @@ The server owns control-plane state:
 - Proxy hosts, upstreams, certificates, WAF, rate-limit, GeoIP, and IP policies.
 - PostgreSQL transactions, optimistic version checks, audit records, and deployment jobs.
 - Desired-state generation from typed records.
+- Automatic reconciliation with durable retries and PostgreSQL-backed ownership.
 - Traffic and security analytics APIs.
 - Agent calls through a local Unix socket.
 
 The server runs without root access. It cannot write NGINX configuration or signal NGINX directly.
+
+Saving a gateway resource and queueing its revision happen in one transaction.
+One reconciler owns NGINX activation at a time through a PostgreSQL advisory
+lock, so concurrent users and multiple server instances cannot apply revisions
+out of order. Temporary agent failures retry while permanent validation errors
+remain visible for operator correction.
 
 ## Agent
 

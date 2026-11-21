@@ -20,19 +20,21 @@ type Application struct {
 }
 
 type ProxyHost struct {
-	ID               string `json:"id"`
-	ApplicationID    string `json:"applicationId"`
-	Application      string `json:"application"`
-	Name             string `json:"name"`
-	Enabled          bool   `json:"enabled"`
-	PrimaryDomain    string `json:"primaryDomain"`
-	UpstreamURL      string `json:"upstreamUrl"`
-	UpstreamCount    int    `json:"upstreamCount"`
-	LoadBalancing    string `json:"loadBalancing"`
-	TLSMode          string `json:"tlsMode"`
-	WAFMode          string `json:"wafMode"`
-	RateLimitEnabled bool   `json:"rateLimitEnabled"`
-	Version          int64  `json:"version"`
+	ID                  string `json:"id"`
+	ApplicationID       string `json:"applicationId"`
+	Application         string `json:"application"`
+	Name                string `json:"name"`
+	Enabled             bool   `json:"enabled"`
+	PrimaryDomain       string `json:"primaryDomain"`
+	UpstreamURL         string `json:"upstreamUrl"`
+	UpstreamCount       int    `json:"upstreamCount"`
+	LoadBalancing       string `json:"loadBalancing"`
+	TLSMode             string `json:"tlsMode"`
+	WAFMode             string `json:"wafMode"`
+	RateLimitEnabled    bool   `json:"rateLimitEnabled"`
+	ConfigurationStatus string `json:"configurationStatus"`
+	ConfigurationError  string `json:"configurationError,omitempty"`
+	Version             int64  `json:"version"`
 }
 
 type CreateProxyHostParams struct {
@@ -48,6 +50,12 @@ type CreateProxyHostParams struct {
 	MaxBodySizeMB   int
 	RequestID       string
 	SourceIP        string
+}
+
+type CreateProxyHostResult struct {
+	ProxyHost  ProxyHost
+	Deployment Deployment
+	Config     model.GatewayConfig
 }
 
 func (store *Store) ListApplications(ctx context.Context, userID string) ([]Application, error) {
@@ -112,9 +120,30 @@ func (store *Store) ListProxyHosts(ctx context.Context, userID string) ([]ProxyH
 		       COALESCE(proxy_hosts.tls_policy->>'mode', 'off'),
 		       COALESCE(proxy_hosts.waf_policy->>'mode', 'off'),
 		       COALESCE((proxy_hosts.rate_limit_policy->>'enabled')::boolean, false),
+		       CASE
+		           WHEN proxy_hosts.desired_generation = 0 THEN 'pending'
+		           WHEN gateway_state.active_generation IS NOT NULL
+		                AND proxy_hosts.desired_generation <= gateway_state.active_generation THEN 'active'
+		           WHEN latest_deployment.status = 'failed' THEN 'failed'
+		           WHEN latest_deployment.status = 'retrying' THEN 'retrying'
+		           ELSE 'applying'
+		       END,
+		       CASE
+		           WHEN latest_deployment.status IN ('failed', 'retrying')
+		               THEN COALESCE(latest_deployment.error_message, '')
+		           ELSE ''
+		       END,
 		       proxy_hosts.version
 		FROM proxy_hosts
 		JOIN applications ON applications.id = proxy_hosts.application_id
+		CROSS JOIN gateway_state
+		LEFT JOIN LATERAL (
+		    SELECT deployment_runs.status, deployment_runs.error_message
+		    FROM deployment_runs
+		    JOIN config_revisions ON config_revisions.id = deployment_runs.config_revision_id
+		    ORDER BY config_revisions.generation DESC
+		    LIMIT 1
+		) latest_deployment ON true
 		JOIN LATERAL (
 		    SELECT url, COUNT(*) OVER () AS upstream_count FROM upstreams
 		    WHERE proxy_host_id = proxy_hosts.id
@@ -153,6 +182,8 @@ func (store *Store) ListProxyHosts(ctx context.Context, userID string) ([]ProxyH
 			&host.TLSMode,
 			&host.WAFMode,
 			&host.RateLimitEnabled,
+			&host.ConfigurationStatus,
+			&host.ConfigurationError,
 			&host.Version,
 		); err != nil {
 			return nil, fmt.Errorf("scan proxy host: %w", err)
@@ -165,13 +196,13 @@ func (store *Store) ListProxyHosts(ctx context.Context, userID string) ([]ProxyH
 	return hosts, nil
 }
 
-func (store *Store) CreateProxyHost(ctx context.Context, userID string, params CreateProxyHostParams) (ProxyHost, error) {
+func (store *Store) CreateProxyHost(ctx context.Context, userID string, params CreateProxyHostParams) (CreateProxyHostResult, error) {
 	params.Name = strings.TrimSpace(params.Name)
 	if params.Name == "" || len(params.Name) > 120 {
-		return ProxyHost{}, errors.New("name must contain 1 to 120 characters")
+		return CreateProxyHostResult{}, errors.New("name must contain 1 to 120 characters")
 	}
 	if len(params.Upstreams) == 0 {
-		return ProxyHost{}, errors.New("at least one upstream is required")
+		return CreateProxyHostResult{}, errors.New("at least one upstream is required")
 	}
 	site := model.Site{
 		ID:              "proxy-host",
@@ -186,26 +217,29 @@ func (store *Store) CreateProxyHost(ctx context.Context, userID string, params C
 		MaxBodySizeMB:   params.MaxBodySizeMB,
 	}
 	if err := site.Validate(); err != nil {
-		return ProxyHost{}, err
+		return CreateProxyHostResult{}, err
 	}
 	domain := site.Domains[0]
 	hostID, err := randomUUID()
 	if err != nil {
-		return ProxyHost{}, err
+		return CreateProxyHostResult{}, err
 	}
 
-	transaction, err := store.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	transaction, err := store.Pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
-		return ProxyHost{}, fmt.Errorf("begin proxy host create: %w", err)
+		return CreateProxyHostResult{}, fmt.Errorf("begin proxy host create: %w", err)
 	}
 	defer transaction.Rollback(ctx) //nolint:errcheck
 
+	if err := lockGatewayMutation(ctx, transaction); err != nil {
+		return CreateProxyHostResult{}, err
+	}
 	allowed, err := hasApplicationPermission(ctx, transaction, userID, params.ApplicationID, "proxy_hosts.write")
 	if err != nil {
-		return ProxyHost{}, err
+		return CreateProxyHostResult{}, err
 	}
 	if !allowed {
-		return ProxyHost{}, ErrForbidden
+		return CreateProxyHostResult{}, ErrForbidden
 	}
 
 	tlsPolicy, _ := json.Marshal(model.TLSPolicy{Mode: "off", RedirectHTTP: true})
@@ -236,29 +270,29 @@ func (store *Store) CreateProxyHost(ctx context.Context, userID string, params C
 	if err != nil {
 		var databaseError *pgconn.PgError
 		if errors.As(err, &databaseError) && databaseError.Code == "23505" {
-			return ProxyHost{}, ErrConflict
+			return CreateProxyHostResult{}, ErrConflict
 		}
-		return ProxyHost{}, fmt.Errorf("insert proxy host: %w", err)
+		return CreateProxyHostResult{}, fmt.Errorf("insert proxy host: %w", err)
 	}
 	for _, hostDomain := range site.Domains {
 		if _, err := transaction.Exec(ctx, `
 			INSERT INTO proxy_host_domains (proxy_host_id, domain) VALUES ($1, $2)`, hostID, hostDomain); err != nil {
 			var databaseError *pgconn.PgError
 			if errors.As(err, &databaseError) && databaseError.Code == "23505" {
-				return ProxyHost{}, ErrConflict
+				return CreateProxyHostResult{}, ErrConflict
 			}
-			return ProxyHost{}, fmt.Errorf("insert proxy host domain: %w", err)
+			return CreateProxyHostResult{}, fmt.Errorf("insert proxy host domain: %w", err)
 		}
 	}
 	for _, upstream := range site.Upstreams {
 		upstreamID, err := randomUUID()
 		if err != nil {
-			return ProxyHost{}, err
+			return CreateProxyHostResult{}, err
 		}
 		if _, err := transaction.Exec(ctx, `
 			INSERT INTO upstreams (id, proxy_host_id, url, weight, max_fails, fail_after_seconds, backup)
 			VALUES ($1, $2, $3, $4, $5, $6, $7)`, upstreamID, hostID, upstream.URL, upstream.Weight, upstream.MaxFails, upstream.FailAfter, upstream.Backup); err != nil {
-			return ProxyHost{}, fmt.Errorf("insert upstream: %w", err)
+			return CreateProxyHostResult{}, fmt.Errorf("insert upstream: %w", err)
 		}
 	}
 	if _, err := transaction.Exec(ctx, `
@@ -272,30 +306,50 @@ func (store *Store) CreateProxyHost(ctx context.Context, userID string, params C
 		params.SourceIP,
 		map[string]any{"domain": domain, "upstreams": len(site.Upstreams)},
 	); err != nil {
-		return ProxyHost{}, fmt.Errorf("write proxy host audit log: %w", err)
+		return CreateProxyHostResult{}, fmt.Errorf("write proxy host audit log: %w", err)
 	}
-	if err := transaction.Commit(ctx); err != nil {
-		return ProxyHost{}, fmt.Errorf("commit proxy host create: %w", err)
+
+	deployment, config, err := createDeploymentRecord(ctx, transaction, userID, CreateDeploymentParams{
+		RequestID: params.RequestID,
+		SourceIP:  params.SourceIP,
+	})
+	if err != nil {
+		return CreateProxyHostResult{}, err
+	}
+	if _, err := transaction.Exec(ctx, `
+		UPDATE proxy_hosts SET desired_generation = $2 WHERE id = $1`,
+		hostID, deployment.Generation,
+	); err != nil {
+		return CreateProxyHostResult{}, fmt.Errorf("record proxy host generation: %w", err)
 	}
 
 	var applicationName string
-	if err := store.Pool.QueryRow(ctx, "SELECT name FROM applications WHERE id = $1", params.ApplicationID).Scan(&applicationName); err != nil {
-		return ProxyHost{}, fmt.Errorf("read created proxy host application: %w", err)
+	if err := transaction.QueryRow(ctx, "SELECT name FROM applications WHERE id = $1", params.ApplicationID).Scan(&applicationName); err != nil {
+		return CreateProxyHostResult{}, fmt.Errorf("read created proxy host application: %w", err)
 	}
-	return ProxyHost{
-		ID:               hostID,
-		ApplicationID:    params.ApplicationID,
-		Application:      applicationName,
-		Name:             params.Name,
-		Enabled:          true,
-		PrimaryDomain:    domain,
-		UpstreamURL:      site.Upstreams[0].URL,
-		UpstreamCount:    len(site.Upstreams),
-		LoadBalancing:    site.LoadBalancing,
-		TLSMode:          "off",
-		WAFMode:          site.WAF.Mode,
-		RateLimitEnabled: site.RateLimit.Enabled,
-		Version:          1,
+	if err := transaction.Commit(ctx); err != nil {
+		return CreateProxyHostResult{}, fmt.Errorf("commit proxy host create: %w", err)
+	}
+
+	return CreateProxyHostResult{
+		ProxyHost: ProxyHost{
+			ID:                  hostID,
+			ApplicationID:       params.ApplicationID,
+			Application:         applicationName,
+			Name:                params.Name,
+			Enabled:             true,
+			PrimaryDomain:       domain,
+			UpstreamURL:         site.Upstreams[0].URL,
+			UpstreamCount:       len(site.Upstreams),
+			LoadBalancing:       site.LoadBalancing,
+			TLSMode:             "off",
+			WAFMode:             site.WAF.Mode,
+			RateLimitEnabled:    site.RateLimit.Enabled,
+			ConfigurationStatus: "applying",
+			Version:             1,
+		},
+		Deployment: deployment,
+		Config:     config,
 	}, nil
 }
 

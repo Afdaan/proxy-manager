@@ -7,7 +7,9 @@ import {
   createProxyHost,
   getApplications,
   getProxyHosts,
+  type CreateProxyHostResult,
   type CreateProxyHostInput,
+  type ProxyHost,
   type UpstreamInput,
 } from '../api/client'
 import { Badge } from '../components/ui/badge'
@@ -24,17 +26,24 @@ const defaultBackend = (): UpstreamInput => ({
 
 export function ProxyHostsPage() {
   const [creating, setCreating] = useState(false)
+  const [lastSave, setLastSave] = useState<CreateProxyHostResult | null>(null)
   const [search, setSearch] = useState('')
   const queryClient = useQueryClient()
   const applicationsQuery = useQuery({ queryKey: ['applications'], queryFn: getApplications })
-  const hostsQuery = useQuery({ queryKey: ['proxy-hosts'], queryFn: getProxyHosts })
+  const hostsQuery = useQuery({
+    queryKey: ['proxy-hosts'],
+    queryFn: getProxyHosts,
+    refetchInterval: (query) => query.state.data?.some((host) => ['applying', 'retrying'].includes(host.configurationStatus)) ? 3000 : false,
+  })
   const createMutation = useMutation({
     mutationFn: createProxyHost,
-    onSuccess: async () => {
+    onSuccess: async (result) => {
       setCreating(false)
+      setLastSave(result)
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['proxy-hosts'] }),
         queryClient.invalidateQueries({ queryKey: ['overview'] }),
+        queryClient.invalidateQueries({ queryKey: ['deployments'] }),
       ])
     },
   })
@@ -45,18 +54,23 @@ export function ProxyHostsPage() {
       [host.name, host.primaryDomain, host.upstreamUrl, host.application].some((value) => value.toLowerCase().includes(query)),
     )
   }, [hostsQuery.data, search])
+  const lastSavedHost = lastSave
+    ? hostsQuery.data?.find((host) => host.id === lastSave.proxyHost.id)
+    : undefined
 
   return (
     <div className="page-enter space-y-5">
       <section className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h2 className="text-3xl font-semibold tracking-[-0.04em]">Proxy hosts</h2>
-          <p className="mt-2 text-sm text-muted">Save routes first. Deploy the complete reviewed configuration separately.</p>
+          <p className="mt-2 text-sm text-muted">Save once. The gateway validates and applies the complete NGINX configuration automatically.</p>
         </div>
         <Button onClick={() => setCreating((value) => !value)} variant="primary">
           {creating ? <X className="size-4" /> : <Plus className="size-4" />} {creating ? 'Cancel' : 'New host'}
         </Button>
       </section>
+
+      {lastSave && <SaveResult host={lastSavedHost} result={lastSave} />}
 
       {creating && (
         <CreateHostForm
@@ -105,7 +119,7 @@ export function ProxyHostsPage() {
                   {host.wafMode !== 'off' && <Badge tone="success">WAF {host.wafMode}</Badge>}
                   {host.rateLimitEnabled && <Badge tone="success">Rate limit</Badge>}
                 </div>
-                <Badge tone={host.enabled ? 'success' : 'warning'}>{host.enabled ? 'enabled' : 'disabled'}</Badge>
+                <ConfigurationBadge host={host} />
               </div>
             ))}
           </div>
@@ -277,10 +291,10 @@ function CreateHostForm({
         </details>
 
         <div className="flex flex-col gap-3 border-t px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-xs text-muted">Saving does not reload NGINX. Use Deploy changes after review.</p>
+          <p className="text-xs text-muted">Save validates the generated configuration and applies it without interrupting existing traffic.</p>
           <div className="flex items-center justify-end gap-3">
             {error && <p className="text-sm text-danger" role="alert">{error instanceof APIError ? error.message : 'Unable to create proxy host'}</p>}
-            <Button disabled={disabled} type="submit" variant="primary"><Plus className="size-4" /> {disabled ? 'Creating…' : 'Create proxy host'}</Button>
+            <Button disabled={disabled} type="submit" variant="primary"><Plus className="size-4" /> {disabled ? 'Saving & applying…' : 'Create & apply'}</Button>
           </div>
         </div>
       </form>
@@ -303,10 +317,43 @@ function EmptyHosts() {
       <div>
         <div className="mx-auto grid size-12 place-items-center rounded-xl border bg-background"><Network className="size-5" /></div>
         <h3 className="mt-4 font-bold">No proxy hosts yet</h3>
-        <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-muted">Create a domain route. Deployment remains separate until its generated configuration passes validation.</p>
+        <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-muted">Create a domain route. Its generated NGINX configuration is validated and applied automatically.</p>
       </div>
     </div>
   )
+}
+
+function SaveResult({ host, result }: { host?: ProxyHost; result: CreateProxyHostResult }) {
+  const currentHost = host ?? result.proxyHost
+  const status = currentHost.configurationStatus
+  const failed = status === 'failed'
+  const waiting = status === 'retrying' || status === 'applying'
+  return (
+    <Card className={`border-l-4 p-4 ${failed ? 'border-l-red-500' : waiting ? 'border-l-amber-400' : 'border-l-emerald-400'}`}>
+      <p className="text-sm font-bold">
+        {failed ? 'Host saved, configuration rejected' : waiting ? 'Host saved, gateway reconciliation continues' : 'Host created and active'}
+      </p>
+      <p className="mt-1 text-xs leading-5 text-muted">
+        {failed
+          ? currentHost.configurationError ?? result.deployment.errorMessage
+          : waiting
+            ? 'Existing traffic remains on the last valid revision. The system retries temporary gateway failures automatically.'
+            : `${currentHost.primaryDomain} is active on the gateway.`}
+      </p>
+    </Card>
+  )
+}
+
+function ConfigurationBadge({ host }: { host: ProxyHost }) {
+  const labels: Record<ProxyHost['configurationStatus'], string> = {
+    active: 'active',
+    applying: 'applying',
+    failed: 'failed',
+    pending: 'pending',
+    retrying: 'retrying',
+  }
+  const tone = host.configurationStatus === 'active' ? 'success' : host.configurationStatus === 'failed' ? 'danger' : 'warning'
+  return <Badge title={host.configurationError} tone={tone}>{labels[host.configurationStatus]}</Badge>
 }
 
 function Field({ label, children }: { label: string; children: ReactNode }) {

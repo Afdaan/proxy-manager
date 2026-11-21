@@ -1,11 +1,26 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Network, Plus, Search, X } from 'lucide-react'
+import { ChevronDown, Network, Plus, Search, Server, ShieldCheck, Trash2, X } from 'lucide-react'
 import { useMemo, useState, type FormEvent, type ReactNode } from 'react'
 
-import { APIError, createProxyHost, getApplications, getProxyHosts } from '../api/client'
+import {
+  APIError,
+  createProxyHost,
+  getApplications,
+  getProxyHosts,
+  type CreateProxyHostInput,
+  type UpstreamInput,
+} from '../api/client'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Card } from '../components/ui/card'
+
+const defaultBackend = (): UpstreamInput => ({
+  url: '',
+  weight: 1,
+  maxFails: 3,
+  failAfterSeconds: 10,
+  backup: false,
+})
 
 export function ProxyHostsPage() {
   const [creating, setCreating] = useState(false)
@@ -31,23 +46,12 @@ export function ProxyHostsPage() {
     )
   }, [hostsQuery.data, search])
 
-  function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    const form = new FormData(event.currentTarget)
-    createMutation.mutate({
-      applicationId: String(form.get('applicationId') ?? ''),
-      name: String(form.get('name') ?? ''),
-      primaryDomain: String(form.get('primaryDomain') ?? ''),
-      upstreamUrl: String(form.get('upstreamUrl') ?? ''),
-    })
-  }
-
   return (
     <div className="page-enter space-y-5">
       <section className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h2 className="text-3xl font-semibold tracking-[-0.04em]">Proxy hosts</h2>
-          <p className="mt-2 text-sm text-muted">Domains, upstream targets, certificates, and security posture.</p>
+          <p className="mt-2 text-sm text-muted">Save routes first. Deploy the complete reviewed configuration separately.</p>
         </div>
         <Button onClick={() => setCreating((value) => !value)} variant="primary">
           {creating ? <X className="size-4" /> : <Plus className="size-4" />} {creating ? 'Cancel' : 'New host'}
@@ -55,36 +59,12 @@ export function ProxyHostsPage() {
       </section>
 
       {creating && (
-        <Card className="p-5">
-          <form className="grid gap-4 md:grid-cols-2" onSubmit={submit}>
-            <Field label="Application">
-              <select className="field" name="applicationId" required>
-                {(applicationsQuery.data ?? []).filter((application) => application.canWrite).map((application) => (
-                  <option key={application.id} value={application.id}>{application.name}</option>
-                ))}
-              </select>
-            </Field>
-            <Field label="Display name">
-              <input className="field" name="name" placeholder="Internal dashboard" required />
-            </Field>
-            <Field label="Domain">
-              <input className="field" name="primaryDomain" placeholder="dashboard.example.com" required />
-            </Field>
-            <Field label="Upstream URL">
-              <input className="field" name="upstreamUrl" placeholder="http://10.10.20.15:3000" required type="url" />
-            </Field>
-            {createMutation.isError && (
-              <p className="md:col-span-2 rounded-md border border-red-500/30 bg-red-500/10 p-3 text-sm text-danger" role="alert">
-                {createMutation.error instanceof APIError ? createMutation.error.message : 'Unable to create proxy host'}
-              </p>
-            )}
-            <div className="flex justify-end md:col-span-2">
-              <Button disabled={createMutation.isPending || applicationsQuery.isPending} type="submit" variant="primary">
-                <Plus className="size-4" /> {createMutation.isPending ? 'Creating…' : 'Create proxy host'}
-              </Button>
-            </div>
-          </form>
-        </Card>
+        <CreateHostForm
+          applications={applicationsQuery.data ?? []}
+          disabled={createMutation.isPending || applicationsQuery.isPending}
+          error={createMutation.error}
+          onSubmit={(input) => createMutation.mutate(input)}
+        />
       )}
 
       <Card className="overflow-hidden">
@@ -98,9 +78,9 @@ export function ProxyHostsPage() {
             value={search}
           />
         </div>
-        <div className="hidden grid-cols-[1.4fr_1fr_130px_110px] border-b bg-background/60 px-5 py-3 text-[10px] font-bold tracking-wider text-muted uppercase md:grid">
+        <div className="hidden grid-cols-[1.4fr_1fr_150px_110px] border-b bg-background/60 px-5 py-3 text-[10px] font-bold tracking-wider text-muted uppercase md:grid">
           <span>Domain</span>
-          <span>Upstream</span>
+          <span>Backend pool</span>
           <span>Protection</span>
           <span>Status</span>
         </div>
@@ -111,43 +91,224 @@ export function ProxyHostsPage() {
         ) : hosts.length ? (
           <div className="divide-y">
             {hosts.map((host) => (
-              <div className="grid gap-3 px-5 py-4 md:grid-cols-[1.4fr_1fr_130px_110px] md:items-center" key={host.id}>
+              <div className="grid gap-3 px-5 py-4 md:grid-cols-[1.4fr_1fr_150px_110px] md:items-center" key={host.id}>
                 <div>
                   <p className="font-semibold">{host.primaryDomain}</p>
                   <p className="mt-1 text-xs text-muted">{host.application} / {host.name}</p>
                 </div>
-                <p className="truncate font-mono text-xs text-muted">{host.upstreamUrl}</p>
-                <div className="flex gap-2">
+                <div className="min-w-0">
+                  <p className="truncate font-mono text-xs text-muted">{host.upstreamUrl}</p>
+                  <p className="mt-1 text-[11px] text-muted">{host.upstreamCount} backend · {host.loadBalancing.replace('_', ' ')}</p>
+                </div>
+                <div className="flex flex-wrap gap-2">
                   <Badge>{host.tlsMode}</Badge>
-                  <Badge>{host.wafMode}</Badge>
+                  {host.wafMode !== 'off' && <Badge tone="success">WAF {host.wafMode}</Badge>}
+                  {host.rateLimitEnabled && <Badge tone="success">Rate limit</Badge>}
                 </div>
                 <Badge tone={host.enabled ? 'success' : 'warning'}>{host.enabled ? 'enabled' : 'disabled'}</Badge>
               </div>
             ))}
           </div>
         ) : (
-          <div className="grid min-h-72 place-items-center p-8 text-center">
-            <div>
-              <div className="mx-auto grid size-12 place-items-center rounded-xl border bg-background">
-                <Network className="size-5" />
-              </div>
-              <h3 className="mt-4 font-bold">No proxy hosts yet</h3>
-              <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-muted">
-                Create a domain route. Deployment remains separate until its generated configuration passes validation.
-              </p>
-            </div>
-          </div>
+          <EmptyHosts />
         )}
       </Card>
     </div>
   )
 }
 
-function Field({ label, children }: { label: string; children: ReactNode }) {
+function CreateHostForm({
+  applications,
+  disabled,
+  error,
+  onSubmit,
+}: {
+  applications: Array<{ id: string; name: string; canWrite: boolean }>
+  disabled: boolean
+  error: Error | null
+  onSubmit: (input: CreateProxyHostInput) => void
+}) {
+  const [backends, setBackends] = useState<UpstreamInput[]>([defaultBackend()])
+  const [rateLimitEnabled, setRateLimitEnabled] = useState(false)
+  const [wafMode, setWafMode] = useState<'off' | 'detect' | 'block'>('off')
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const form = new FormData(event.currentTarget)
+    onSubmit({
+      applicationId: String(form.get('applicationId') ?? ''),
+      name: String(form.get('name') ?? ''),
+      primaryDomain: String(form.get('primaryDomain') ?? ''),
+      domainAliases: String(form.get('domainAliases') ?? '').split(/[\s,]+/).filter(Boolean),
+      upstreams: backends,
+      loadBalancing: String(form.get('loadBalancing') ?? 'round_robin') as CreateProxyHostInput['loadBalancing'],
+      rateLimit: {
+        enabled: rateLimitEnabled,
+        requests: Number(form.get('rateRequests') ?? 60),
+        periodSeconds: Number(form.get('ratePeriod') ?? 60) as 1 | 60,
+        burst: Number(form.get('rateBurst') ?? 20),
+        rejectStatus: 429,
+        noDelay: true,
+      },
+      waf: {
+        mode: wafMode,
+        paranoiaLevel: Number(form.get('wafParanoia') ?? 1),
+      },
+      securityHeaders: form.get('securityHeaders') === 'on',
+      maxBodySizeMb: Number(form.get('maxBodySizeMb') ?? 10),
+    })
+  }
+
+  function updateBackend(index: number, patch: Partial<UpstreamInput>) {
+    setBackends((current) => current.map((backend, backendIndex) => backendIndex === index ? { ...backend, ...patch } : backend))
+  }
+
   return (
-    <label className="text-sm font-semibold">
-      {label}
-      <span className="mt-2 block">{children}</span>
-    </label>
+    <Card className="overflow-hidden">
+      <form onSubmit={submit}>
+        <div className="grid gap-4 p-5 md:grid-cols-2">
+          <Field label="Application">
+            <select className="field" name="applicationId" required>
+              {applications.filter((application) => application.canWrite).map((application) => (
+                <option key={application.id} value={application.id}>{application.name}</option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Display name">
+            <input className="field" name="name" placeholder="Internal dashboard" required />
+          </Field>
+          <Field label="Primary domain">
+            <input className="field" name="primaryDomain" placeholder="dashboard.example.com" required />
+          </Field>
+          <Field label="Backend URL">
+            <input
+              className="field font-mono text-sm"
+              onChange={(event) => updateBackend(0, { url: event.target.value })}
+              placeholder="http://10.10.20.15:3000"
+              required
+              type="url"
+              value={backends[0].url}
+            />
+          </Field>
+        </div>
+
+        <details className="group border-t">
+          <summary className="flex cursor-pointer list-none items-center justify-between px-5 py-4 text-sm font-bold">
+            <span className="flex items-center gap-2"><ShieldCheck className="size-4" /> Advanced routing and protection</span>
+            <ChevronDown className="size-4 text-muted transition-transform group-open:rotate-180" />
+          </summary>
+          <div className="space-y-6 border-t bg-background/35 p-5">
+            <section>
+              <SectionTitle icon={Server} title="Backend pool" description="Add replicas only when the application has more than one reachable backend." />
+              <div className="mt-4 space-y-3">
+                {backends.map((backend, index) => (
+                  <div className="grid gap-3 rounded-lg border bg-surface p-3 md:grid-cols-[1fr_100px_110px_auto] md:items-end" key={index}>
+                    <Field label={index === 0 ? 'Primary backend' : `Backend ${index + 1}`}>
+                      <input className="field font-mono text-sm" onChange={(event) => updateBackend(index, { url: event.target.value })} required type="url" value={backend.url} />
+                    </Field>
+                    <Field label="Weight">
+                      <input className="field" max="100" min="1" onChange={(event) => updateBackend(index, { weight: Number(event.target.value) })} type="number" value={backend.weight} />
+                    </Field>
+                    <label className="flex h-10 items-center gap-2 text-sm font-semibold">
+                      <input checked={backend.backup} disabled={backends.length === 1} onChange={(event) => updateBackend(index, { backup: event.target.checked })} type="checkbox" /> Backup only
+                    </label>
+                    {index > 0 && (
+                      <Button aria-label={`Remove backend ${index + 1}`} onClick={() => setBackends((current) => current.filter((_, backendIndex) => backendIndex !== index))} type="button" variant="ghost">
+                        <Trash2 className="size-4" />
+                      </Button>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <div className="mt-3 flex flex-wrap items-end gap-3">
+                <Button onClick={() => setBackends((current) => [...current, defaultBackend()])} type="button"><Plus className="size-4" /> Add backend</Button>
+                <Field label="Load balancing">
+                  <select className="field min-w-44" name="loadBalancing">
+                    <option value="round_robin">Round robin</option>
+                    <option value="least_conn">Least connections</option>
+                    <option value="ip_hash">IP hash</option>
+                  </select>
+                </Field>
+              </div>
+            </section>
+
+            <section className="grid gap-4 border-t pt-6 md:grid-cols-2">
+              <Field label="Domain aliases">
+                <textarea className="field min-h-24 py-2" name="domainAliases" placeholder="www.example.com, api.example.com" />
+              </Field>
+              <Field label="Maximum request body">
+                <div className="relative">
+                  <input className="field pr-12" defaultValue="10" max="10240" min="1" name="maxBodySizeMb" type="number" />
+                  <span className="pointer-events-none absolute inset-y-0 right-3 grid place-items-center text-xs text-muted">MB</span>
+                </div>
+              </Field>
+            </section>
+
+            <section className="grid gap-4 border-t pt-6 md:grid-cols-2">
+              <div className="rounded-lg border bg-surface p-4">
+                <label className="flex items-center justify-between gap-4 text-sm font-bold">
+                  Rate limiting
+                  <input checked={rateLimitEnabled} onChange={(event) => setRateLimitEnabled(event.target.checked)} type="checkbox" />
+                </label>
+                <div className="mt-4 grid grid-cols-3 gap-3">
+                  <Field label="Requests"><input className="field" defaultValue="60" disabled={!rateLimitEnabled} min="1" name="rateRequests" type="number" /></Field>
+                  <Field label="Period"><select className="field" disabled={!rateLimitEnabled} name="ratePeriod"><option value="60">Minute</option><option value="1">Second</option></select></Field>
+                  <Field label="Burst"><input className="field" defaultValue="20" disabled={!rateLimitEnabled} min="0" name="rateBurst" type="number" /></Field>
+                </div>
+              </div>
+              <div className="rounded-lg border bg-surface p-4">
+                <Field label="Web application firewall">
+                  <select className="field" onChange={(event) => setWafMode(event.target.value as typeof wafMode)} value={wafMode}>
+                    <option value="off">Off</option>
+                    <option value="detect">Detect only</option>
+                    <option value="block">Block requests</option>
+                  </select>
+                </Field>
+                <div className="mt-3">
+                  <p className="text-xs leading-5 text-muted">Detection and blocking use the managed OWASP CRS baseline installed on the gateway.</p>
+                </div>
+              </div>
+            </section>
+
+            <label className="flex items-center gap-3 text-sm font-semibold">
+              <input defaultChecked name="securityHeaders" type="checkbox" /> Add safe security headers
+            </label>
+          </div>
+        </details>
+
+        <div className="flex flex-col gap-3 border-t px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-xs text-muted">Saving does not reload NGINX. Use Deploy changes after review.</p>
+          <div className="flex items-center justify-end gap-3">
+            {error && <p className="text-sm text-danger" role="alert">{error instanceof APIError ? error.message : 'Unable to create proxy host'}</p>}
+            <Button disabled={disabled} type="submit" variant="primary"><Plus className="size-4" /> {disabled ? 'Creating…' : 'Create proxy host'}</Button>
+          </div>
+        </div>
+      </form>
+    </Card>
   )
+}
+
+function SectionTitle({ icon: Icon, title, description }: { icon: typeof Server; title: string; description: string }) {
+  return (
+    <div className="flex gap-3">
+      <div className="grid size-9 shrink-0 place-items-center rounded-md border bg-surface"><Icon className="size-4" /></div>
+      <div><h3 className="text-sm font-bold">{title}</h3><p className="mt-1 text-xs leading-5 text-muted">{description}</p></div>
+    </div>
+  )
+}
+
+function EmptyHosts() {
+  return (
+    <div className="grid min-h-72 place-items-center p-8 text-center">
+      <div>
+        <div className="mx-auto grid size-12 place-items-center rounded-xl border bg-background"><Network className="size-5" /></div>
+        <h3 className="mt-4 font-bold">No proxy hosts yet</h3>
+        <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-muted">Create a domain route. Deployment remains separate until its generated configuration passes validation.</p>
+      </div>
+    </div>
+  )
+}
+
+function Field({ label, children }: { label: string; children: ReactNode }) {
+  return <label className="text-sm font-semibold">{label}<span className="mt-2 block">{children}</span></label>
 }

@@ -33,16 +33,54 @@ export interface ProxyHost {
   enabled: boolean
   primaryDomain: string
   upstreamUrl: string
+  upstreamCount: number
+  loadBalancing: 'round_robin' | 'least_conn' | 'ip_hash'
   tlsMode: string
   wafMode: string
+  rateLimitEnabled: boolean
   version: number
+}
+
+export interface UpstreamInput {
+  url: string
+  weight: number
+  maxFails: number
+  failAfterSeconds: number
+  backup: boolean
 }
 
 export interface CreateProxyHostInput {
   applicationId: string
   name: string
   primaryDomain: string
-  upstreamUrl: string
+  domainAliases: string[]
+  upstreams: UpstreamInput[]
+  loadBalancing: ProxyHost['loadBalancing']
+  rateLimit: {
+    enabled: boolean
+    requests: number
+    periodSeconds: 1 | 60
+    burst: number
+    rejectStatus: number
+    noDelay: boolean
+  }
+  waf: {
+    mode: 'off' | 'detect' | 'block'
+    paranoiaLevel: number
+  }
+  securityHeaders: boolean
+  maxBodySizeMb: number
+}
+
+export interface Deployment {
+  id: string
+  generation: number
+  revision: string
+  status: 'queued' | 'validating' | 'applying' | 'succeeded' | 'failed' | 'rolled_back'
+  errorMessage?: string
+  startedAt?: string
+  finishedAt?: string
+  createdAt: string
 }
 
 export class APIError extends Error {
@@ -93,6 +131,16 @@ export async function createProxyHost(input: CreateProxyHostInput): Promise<Prox
     body: JSON.stringify(input),
   })
   return result.proxyHost
+}
+
+export async function getDeployments(): Promise<Deployment[]> {
+  const result = await request<{ deployments: Deployment[] }>('/api/v1/deployments')
+  return result.deployments
+}
+
+export async function createDeployment(): Promise<Deployment> {
+  const result = await request<{ deployment: Deployment }>('/api/v1/deployments', { method: 'POST' })
+  return result.deployment
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {

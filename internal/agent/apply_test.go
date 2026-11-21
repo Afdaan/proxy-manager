@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -31,13 +32,13 @@ func (runner *recordingRunner) Run(_ context.Context, name string, arguments ...
 	return nil
 }
 
-func TestApplyIsAtomicAndIdempotent(t *testing.T) {
+func TestApplyWritesBundleAtomicallyAndIsIdempotent(t *testing.T) {
 	t.Parallel()
 
-	temporaryDirectory := t.TempDir()
+	root := t.TempDir()
 	runner := &recordingRunner{}
-	applier := newTestApplier(temporaryDirectory, runner)
-	first := testConfig(1, "first")
+	applier := newTestApplier(root, runner)
+	first := testConfig(1, "2026-11-21_03-30-42Z--rev-1--first1")
 
 	if err := applier.Apply(context.Background(), first); err != nil {
 		t.Fatalf("apply first revision: %v", err)
@@ -46,8 +47,17 @@ func TestApplyIsAtomicAndIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read active config: %v", err)
 	}
-	if !strings.Contains(activeTarget, "00000000000000000001-first") {
+	if !strings.Contains(activeTarget, first.Revision) {
 		t.Fatalf("unexpected active target %q", activeTarget)
+	}
+	for _, path := range []string{"nginx.conf", "manifest.json", "globals/00-runtime.conf"} {
+		if _, err := os.Stat(filepath.Join(filepath.Dir(activeTarget), path)); err != nil {
+			t.Errorf("revision missing %s: %v", path, err)
+		}
+	}
+	hostFiles, err := filepath.Glob(filepath.Join(filepath.Dir(activeTarget), "hosts", "console.example.com--*.conf"))
+	if err != nil || len(hostFiles) != 1 {
+		t.Fatalf("expected one readable host file, got %v: %v", hostFiles, err)
 	}
 	if len(runner.commands) != 2 {
 		t.Fatalf("expected test and reload commands, got %d", len(runner.commands))
@@ -60,7 +70,7 @@ func TestApplyIsAtomicAndIdempotent(t *testing.T) {
 		t.Fatalf("idempotent apply ran commands again: %d", len(runner.commands))
 	}
 
-	conflict := testConfig(1, "conflict")
+	conflict := testConfig(1, "2026-11-21_03-31-42Z--rev-1--other1")
 	if err := applier.Apply(context.Background(), conflict); err == nil {
 		t.Fatal("expected same generation with another revision to fail")
 	}
@@ -69,16 +79,16 @@ func TestApplyIsAtomicAndIdempotent(t *testing.T) {
 func TestFailedValidationRestoresPreviousRevision(t *testing.T) {
 	t.Parallel()
 
-	temporaryDirectory := t.TempDir()
+	root := t.TempDir()
 	runner := &recordingRunner{}
-	applier := newTestApplier(temporaryDirectory, runner)
-	if err := applier.Apply(context.Background(), testConfig(1, "stable")); err != nil {
+	applier := newTestApplier(root, runner)
+	if err := applier.Apply(context.Background(), testConfig(1, "2026-11-21_03-30-42Z--rev-1--stable")); err != nil {
 		t.Fatalf("apply stable revision: %v", err)
 	}
 	stableTarget, _ := os.Readlink(applier.ActiveConfigPath)
 
 	runner.failTest = true
-	if err := applier.Apply(context.Background(), testConfig(2, "broken")); err == nil {
+	if err := applier.Apply(context.Background(), testConfig(2, "2026-11-21_03-31-42Z--rev-2--broken")); err == nil {
 		t.Fatal("expected validation failure")
 	}
 	activeTarget, _ := os.Readlink(applier.ActiveConfigPath)
@@ -90,21 +100,56 @@ func TestFailedValidationRestoresPreviousRevision(t *testing.T) {
 func TestRollbackSwapsCurrentAndPrevious(t *testing.T) {
 	t.Parallel()
 
-	temporaryDirectory := t.TempDir()
+	root := t.TempDir()
 	runner := &recordingRunner{}
-	applier := newTestApplier(temporaryDirectory, runner)
-	if err := applier.Apply(context.Background(), testConfig(1, "first")); err != nil {
+	applier := newTestApplier(root, runner)
+	first := testConfig(1, "2026-11-21_03-30-42Z--rev-1--first1")
+	second := testConfig(2, "2026-11-21_03-31-42Z--rev-2--second")
+	if err := applier.Apply(context.Background(), first); err != nil {
 		t.Fatalf("apply first revision: %v", err)
 	}
-	if err := applier.Apply(context.Background(), testConfig(2, "second")); err != nil {
+	if err := applier.Apply(context.Background(), second); err != nil {
 		t.Fatalf("apply second revision: %v", err)
 	}
 	if err := applier.Rollback(context.Background()); err != nil {
 		t.Fatalf("rollback: %v", err)
 	}
 	activeTarget, _ := os.Readlink(applier.ActiveConfigPath)
-	if !strings.Contains(activeTarget, "00000000000000000001-first") {
+	if !strings.Contains(activeTarget, first.Revision) {
 		t.Fatalf("rollback selected unexpected target %q", activeTarget)
+	}
+}
+
+func TestRetentionKeepsTenLatestPlusPrevious(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	applier := newTestApplier(root, &recordingRunner{})
+	for generation := uint64(1); generation <= 12; generation++ {
+		revision := fmt.Sprintf("2026-11-21_03-%02d-42Z--rev-%d--abcdef", generation, generation)
+		if err := applier.Apply(context.Background(), testConfig(generation, revision)); err != nil {
+			t.Fatalf("apply generation %d: %v", generation, err)
+		}
+	}
+	entries, err := os.ReadDir(filepath.Join(applier.StateDir, "revisions"))
+	if err != nil {
+		t.Fatalf("read revisions: %v", err)
+	}
+	if len(entries) != revisionRetention {
+		t.Fatalf("expected %d retained revisions, got %d", revisionRetention, len(entries))
+	}
+}
+
+func TestRejectsUnsafeBundlePath(t *testing.T) {
+	t.Parallel()
+
+	err := writeRevisionBundle(filepath.Join(t.TempDir(), "revision"), testConfig(1, "safe"), nginx.Bundle{Files: []nginx.File{
+		{Path: "nginx.conf"},
+		{Path: "manifest.json", Contents: []byte(`{"generation":1,"revision":"safe"}`)},
+		{Path: "../escape.conf"},
+	}})
+	if err == nil {
+		t.Fatal("expected unsafe bundle path to fail")
 	}
 }
 

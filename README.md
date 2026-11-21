@@ -71,4 +71,29 @@ with access limited to NGINX, Certbot, and its own state directories.
 
 The agent intentionally refuses to start without `PROXY_MANAGER_AGENT_TOKEN`. It should run only on the gateway host under systemd.
 
+## Deploy proxy hosts
+
+Creating or editing a Proxy Host only saves desired state in PostgreSQL. Open
+the Overview page and select **Deploy changes** to validate and activate the
+complete gateway configuration.
+
+Each successful deployment creates an immutable revision:
+
+```text
+/var/lib/proxy-manager/revisions/
+└── 2026-11-21_03-30-42Z--rev-42--a81c7f/
+    ├── nginx.conf
+    ├── manifest.json
+    ├── globals/
+    │   ├── 00-runtime.conf
+    │   ├── 10-rate-limit-zones.conf
+    │   └── 20-geoip-maps.conf
+    └── hosts/
+        └── dashboard.example.com--bb819a.conf
+```
+
+`/etc/nginx/proxy-manager/active.conf` remains a symlink to the active
+revision's `nginx.conf`. The agent keeps the ten newest revisions and preserves
+the previous revision for rollback.
+
 See `docs/ARCHITECTURE.md` for security boundaries and the implementation roadmap.

@@ -48,6 +48,7 @@ type Upstream struct {
 	Weight    int    `json:"weight"`
 	MaxFails  int    `json:"maxFails"`
 	FailAfter int    `json:"failAfterSeconds"`
+	Backup    bool   `json:"backup"`
 }
 
 type TLSPolicy struct {
@@ -127,6 +128,10 @@ func (site *Site) Validate() error {
 	if len(site.Domains) == 0 {
 		return errors.New("at least one domain is required")
 	}
+	primaryDomain, err := NormalizeDomain(site.Domains[0])
+	if err != nil {
+		return err
+	}
 	for index, domain := range site.Domains {
 		domain, err := NormalizeDomain(domain)
 		if err != nil {
@@ -136,6 +141,13 @@ func (site *Site) Validate() error {
 	}
 	slices.Sort(site.Domains)
 	site.Domains = slices.Compact(site.Domains)
+	aliases := make([]string, 0, len(site.Domains)-1)
+	for _, domain := range site.Domains {
+		if domain != primaryDomain {
+			aliases = append(aliases, domain)
+		}
+	}
+	site.Domains = append([]string{primaryDomain}, aliases...)
 
 	if site.Enabled && len(site.Upstreams) == 0 {
 		return errors.New("enabled sites require at least one upstream")
@@ -157,6 +169,13 @@ func (site *Site) Validate() error {
 	}
 	if !slices.Contains([]string{"round_robin", "least_conn", "ip_hash"}, site.LoadBalancing) {
 		return errors.New("loadBalancing must be round_robin, least_conn, or ip_hash")
+	}
+	if site.LoadBalancing == "ip_hash" {
+		for _, upstream := range site.Upstreams {
+			if upstream.Backup {
+				return errors.New("backup upstreams are not supported with ip_hash")
+			}
+		}
 	}
 	if err := site.TLS.Validate(); err != nil {
 		return fmt.Errorf("tls: %w", err)

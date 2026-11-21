@@ -20,25 +20,34 @@ type Application struct {
 }
 
 type ProxyHost struct {
-	ID            string `json:"id"`
-	ApplicationID string `json:"applicationId"`
-	Application   string `json:"application"`
-	Name          string `json:"name"`
-	Enabled       bool   `json:"enabled"`
-	PrimaryDomain string `json:"primaryDomain"`
-	UpstreamURL   string `json:"upstreamUrl"`
-	TLSMode       string `json:"tlsMode"`
-	WAFMode       string `json:"wafMode"`
-	Version       int64  `json:"version"`
+	ID               string `json:"id"`
+	ApplicationID    string `json:"applicationId"`
+	Application      string `json:"application"`
+	Name             string `json:"name"`
+	Enabled          bool   `json:"enabled"`
+	PrimaryDomain    string `json:"primaryDomain"`
+	UpstreamURL      string `json:"upstreamUrl"`
+	UpstreamCount    int    `json:"upstreamCount"`
+	LoadBalancing    string `json:"loadBalancing"`
+	TLSMode          string `json:"tlsMode"`
+	WAFMode          string `json:"wafMode"`
+	RateLimitEnabled bool   `json:"rateLimitEnabled"`
+	Version          int64  `json:"version"`
 }
 
 type CreateProxyHostParams struct {
-	ApplicationID string
-	Name          string
-	PrimaryDomain string
-	UpstreamURL   string
-	RequestID     string
-	SourceIP      string
+	ApplicationID   string
+	Name            string
+	PrimaryDomain   string
+	DomainAliases   []string
+	Upstreams       []model.Upstream
+	LoadBalancing   string
+	RateLimit       model.RateLimitPolicy
+	WAF             model.WAFPolicy
+	SecurityHeaders bool
+	MaxBodySizeMB   int
+	RequestID       string
+	SourceIP        string
 }
 
 func (store *Store) ListApplications(ctx context.Context, userID string) ([]Application, error) {
@@ -98,13 +107,16 @@ func (store *Store) ListProxyHosts(ctx context.Context, userID string) ([]ProxyH
 		       proxy_hosts.enabled,
 		       proxy_hosts.primary_domain,
 		       upstreams.url,
+		       upstreams.upstream_count,
+		       proxy_hosts.load_balancing,
 		       COALESCE(proxy_hosts.tls_policy->>'mode', 'off'),
 		       COALESCE(proxy_hosts.waf_policy->>'mode', 'off'),
+		       COALESCE((proxy_hosts.rate_limit_policy->>'enabled')::boolean, false),
 		       proxy_hosts.version
 		FROM proxy_hosts
 		JOIN applications ON applications.id = proxy_hosts.application_id
 		JOIN LATERAL (
-		    SELECT url FROM upstreams
+		    SELECT url, COUNT(*) OVER () AS upstream_count FROM upstreams
 		    WHERE proxy_host_id = proxy_hosts.id
 		    ORDER BY created_at, id
 		    LIMIT 1
@@ -136,8 +148,11 @@ func (store *Store) ListProxyHosts(ctx context.Context, userID string) ([]ProxyH
 			&host.Enabled,
 			&host.PrimaryDomain,
 			&host.UpstreamURL,
+			&host.UpstreamCount,
+			&host.LoadBalancing,
 			&host.TLSMode,
 			&host.WAFMode,
+			&host.RateLimitEnabled,
 			&host.Version,
 		); err != nil {
 			return nil, fmt.Errorf("scan proxy host: %w", err)
@@ -155,19 +170,26 @@ func (store *Store) CreateProxyHost(ctx context.Context, userID string, params C
 	if params.Name == "" || len(params.Name) > 120 {
 		return ProxyHost{}, errors.New("name must contain 1 to 120 characters")
 	}
-	domain, err := model.NormalizeDomain(params.PrimaryDomain)
-	if err != nil {
+	if len(params.Upstreams) == 0 {
+		return ProxyHost{}, errors.New("at least one upstream is required")
+	}
+	site := model.Site{
+		ID:              "proxy-host",
+		Name:            params.Name,
+		Enabled:         true,
+		Domains:         append([]string{params.PrimaryDomain}, params.DomainAliases...),
+		Upstreams:       params.Upstreams,
+		LoadBalancing:   params.LoadBalancing,
+		RateLimit:       params.RateLimit,
+		WAF:             params.WAF,
+		SecurityHeaders: params.SecurityHeaders,
+		MaxBodySizeMB:   params.MaxBodySizeMB,
+	}
+	if err := site.Validate(); err != nil {
 		return ProxyHost{}, err
 	}
-	upstream := model.Upstream{URL: params.UpstreamURL}
-	if _, err := upstream.Validate(); err != nil {
-		return ProxyHost{}, fmt.Errorf("upstream: %w", err)
-	}
+	domain := site.Domains[0]
 	hostID, err := randomUUID()
-	if err != nil {
-		return ProxyHost{}, err
-	}
-	upstreamID, err := randomUUID()
 	if err != nil {
 		return ProxyHost{}, err
 	}
@@ -187,16 +209,17 @@ func (store *Store) CreateProxyHost(ctx context.Context, userID string, params C
 	}
 
 	tlsPolicy, _ := json.Marshal(model.TLSPolicy{Mode: "off", RedirectHTTP: true})
-	rateLimitPolicy, _ := json.Marshal(model.RateLimitPolicy{RejectStatus: 429})
-	wafPolicy, _ := json.Marshal(model.WAFPolicy{Mode: "off"})
+	rateLimitPolicy, _ := json.Marshal(site.RateLimit)
+	wafPolicy, _ := json.Marshal(site.WAF)
 	geoPolicy, _ := json.Marshal(model.GeoPolicy{Mode: "off"})
 	accessPolicy, _ := json.Marshal(model.AccessPolicy{})
 
 	_, err = transaction.Exec(ctx, `
 		INSERT INTO proxy_hosts (
 		    id, application_id, name, enabled, primary_domain,
-		    tls_policy, rate_limit_policy, waf_policy, geo_policy, access_policy
-		) VALUES ($1, $2, $3, true, $4, $5, $6, $7, $8, $9)`,
+		    tls_policy, rate_limit_policy, waf_policy, geo_policy, access_policy,
+		    load_balancing, security_headers, max_body_size_mb
+		) VALUES ($1, $2, $3, true, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
 		hostID,
 		params.ApplicationID,
 		params.Name,
@@ -206,6 +229,9 @@ func (store *Store) CreateProxyHost(ctx context.Context, userID string, params C
 		wafPolicy,
 		geoPolicy,
 		accessPolicy,
+		site.LoadBalancing,
+		site.SecurityHeaders,
+		site.MaxBodySizeMB,
 	)
 	if err != nil {
 		var databaseError *pgconn.PgError
@@ -214,14 +240,26 @@ func (store *Store) CreateProxyHost(ctx context.Context, userID string, params C
 		}
 		return ProxyHost{}, fmt.Errorf("insert proxy host: %w", err)
 	}
-	if _, err := transaction.Exec(ctx, `
-		INSERT INTO proxy_host_domains (proxy_host_id, domain) VALUES ($1, $2)`, hostID, domain); err != nil {
-		return ProxyHost{}, fmt.Errorf("insert proxy host domain: %w", err)
+	for _, hostDomain := range site.Domains {
+		if _, err := transaction.Exec(ctx, `
+			INSERT INTO proxy_host_domains (proxy_host_id, domain) VALUES ($1, $2)`, hostID, hostDomain); err != nil {
+			var databaseError *pgconn.PgError
+			if errors.As(err, &databaseError) && databaseError.Code == "23505" {
+				return ProxyHost{}, ErrConflict
+			}
+			return ProxyHost{}, fmt.Errorf("insert proxy host domain: %w", err)
+		}
 	}
-	if _, err := transaction.Exec(ctx, `
-		INSERT INTO upstreams (id, proxy_host_id, url, weight, max_fails, fail_after_seconds)
-		VALUES ($1, $2, $3, $4, $5, $6)`, upstreamID, hostID, upstream.URL, upstream.Weight, upstream.MaxFails, upstream.FailAfter); err != nil {
-		return ProxyHost{}, fmt.Errorf("insert upstream: %w", err)
+	for _, upstream := range site.Upstreams {
+		upstreamID, err := randomUUID()
+		if err != nil {
+			return ProxyHost{}, err
+		}
+		if _, err := transaction.Exec(ctx, `
+			INSERT INTO upstreams (id, proxy_host_id, url, weight, max_fails, fail_after_seconds, backup)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)`, upstreamID, hostID, upstream.URL, upstream.Weight, upstream.MaxFails, upstream.FailAfter, upstream.Backup); err != nil {
+			return ProxyHost{}, fmt.Errorf("insert upstream: %w", err)
+		}
 	}
 	if _, err := transaction.Exec(ctx, `
 		INSERT INTO audit_logs (
@@ -232,7 +270,7 @@ func (store *Store) CreateProxyHost(ctx context.Context, userID string, params C
 		hostID,
 		params.RequestID,
 		params.SourceIP,
-		map[string]any{"domain": domain, "upstream": upstream.URL},
+		map[string]any{"domain": domain, "upstreams": len(site.Upstreams)},
 	); err != nil {
 		return ProxyHost{}, fmt.Errorf("write proxy host audit log: %w", err)
 	}
@@ -245,16 +283,19 @@ func (store *Store) CreateProxyHost(ctx context.Context, userID string, params C
 		return ProxyHost{}, fmt.Errorf("read created proxy host application: %w", err)
 	}
 	return ProxyHost{
-		ID:            hostID,
-		ApplicationID: params.ApplicationID,
-		Application:   applicationName,
-		Name:          params.Name,
-		Enabled:       true,
-		PrimaryDomain: domain,
-		UpstreamURL:   upstream.URL,
-		TLSMode:       "off",
-		WAFMode:       "off",
-		Version:       1,
+		ID:               hostID,
+		ApplicationID:    params.ApplicationID,
+		Application:      applicationName,
+		Name:             params.Name,
+		Enabled:          true,
+		PrimaryDomain:    domain,
+		UpstreamURL:      site.Upstreams[0].URL,
+		UpstreamCount:    len(site.Upstreams),
+		LoadBalancing:    site.LoadBalancing,
+		TLSMode:          "off",
+		WAFMode:          site.WAF.Mode,
+		RateLimitEnabled: site.RateLimit.Enabled,
+		Version:          1,
 	}, nil
 }
 

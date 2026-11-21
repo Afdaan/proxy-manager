@@ -11,7 +11,7 @@ import (
 func TestUnauthenticatedRoutesRequireLogin(t *testing.T) {
 	server := Server{}.Routes()
 
-	for _, path := range []string{"/api/v1/auth/me", "/api/v1/overview", "/api/v1/applications", "/api/v1/proxy-hosts"} {
+	for _, path := range []string{"/api/v1/auth/me", "/api/v1/overview", "/api/v1/applications", "/api/v1/proxy-hosts", "/api/v1/deployments"} {
 		request := httptest.NewRequest(http.MethodGet, path, nil)
 		recorder := httptest.NewRecorder()
 		server.ServeHTTP(recorder, request)

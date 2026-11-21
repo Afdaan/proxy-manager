@@ -5,14 +5,22 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/afdaan/proxy-manager/internal/model"
 	"github.com/afdaan/proxy-manager/internal/store"
 )
 
 type createProxyHostRequest struct {
-	ApplicationID string `json:"applicationId"`
-	Name          string `json:"name"`
-	PrimaryDomain string `json:"primaryDomain"`
-	UpstreamURL   string `json:"upstreamUrl"`
+	ApplicationID   string                `json:"applicationId"`
+	Name            string                `json:"name"`
+	PrimaryDomain   string                `json:"primaryDomain"`
+	DomainAliases   []string              `json:"domainAliases"`
+	UpstreamURL     string                `json:"upstreamUrl"`
+	Upstreams       []model.Upstream      `json:"upstreams"`
+	LoadBalancing   string                `json:"loadBalancing"`
+	RateLimit       model.RateLimitPolicy `json:"rateLimit"`
+	WAF             model.WAFPolicy       `json:"waf"`
+	SecurityHeaders *bool                 `json:"securityHeaders"`
+	MaxBodySizeMB   int                   `json:"maxBodySizeMb"`
 }
 
 func (server Server) applications(response http.ResponseWriter, request *http.Request) {
@@ -42,13 +50,27 @@ func (server Server) createProxyHost(response http.ResponseWriter, request *http
 		writeError(response, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
+	upstreams := input.Upstreams
+	if len(upstreams) == 0 && strings.TrimSpace(input.UpstreamURL) != "" {
+		upstreams = []model.Upstream{{URL: input.UpstreamURL}}
+	}
+	securityHeaders := true
+	if input.SecurityHeaders != nil {
+		securityHeaders = *input.SecurityHeaders
+	}
 	host, err := server.Store.CreateProxyHost(request.Context(), auth.Session.User.ID, store.CreateProxyHostParams{
-		ApplicationID: strings.TrimSpace(input.ApplicationID),
-		Name:          input.Name,
-		PrimaryDomain: input.PrimaryDomain,
-		UpstreamURL:   input.UpstreamURL,
-		RequestID:     requestIDFromContext(request.Context()),
-		SourceIP:      clientIP(request),
+		ApplicationID:   strings.TrimSpace(input.ApplicationID),
+		Name:            input.Name,
+		PrimaryDomain:   input.PrimaryDomain,
+		DomainAliases:   input.DomainAliases,
+		Upstreams:       upstreams,
+		LoadBalancing:   input.LoadBalancing,
+		RateLimit:       input.RateLimit,
+		WAF:             input.WAF,
+		SecurityHeaders: securityHeaders,
+		MaxBodySizeMB:   input.MaxBodySizeMB,
+		RequestID:       requestIDFromContext(request.Context()),
+		SourceIP:        clientIP(request),
 	})
 	if errors.Is(err, store.ErrForbidden) {
 		writeError(response, http.StatusForbidden, "permission_denied", "proxy host write permission required")

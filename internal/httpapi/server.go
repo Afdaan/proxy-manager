@@ -37,6 +37,8 @@ func (server Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/applications", server.authenticate(server.applications))
 	mux.HandleFunc("GET /api/v1/proxy-hosts", server.authenticate(server.proxyHosts))
 	mux.HandleFunc("POST /api/v1/proxy-hosts", server.authenticate(server.requireCSRF(server.createProxyHost)))
+	mux.HandleFunc("GET /api/v1/deployments", server.authenticate(server.deployments))
+	mux.HandleFunc("POST /api/v1/deployments", server.authenticate(server.requireCSRF(server.createDeployment)))
 	mux.Handle("/", server.webHandler())
 	return requestIDs(securityHeaders(mux))
 }
@@ -87,7 +89,7 @@ func (server Server) agentClient() *http.Client {
 			return dialer.DialContext(ctx, "unix", server.AgentSocket)
 		},
 	}
-	return &http.Client{Transport: transport, Timeout: 3 * time.Second}
+	return &http.Client{Transport: transport, Timeout: 40 * time.Second}
 }
 
 func (server Server) webHandler() http.Handler {

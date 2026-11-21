@@ -1,15 +1,19 @@
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Link } from '@tanstack/react-router'
 import {
   Activity,
-  ArrowUpRight,
   Ban,
+  CheckCircle2,
+  Clock3,
+  CloudUpload,
   KeyRound,
   Network,
   ShieldCheck,
   TerminalSquare,
+  XCircle,
 } from 'lucide-react'
 
-import { getSystemOverview, type FeatureStatus } from '../api/client'
+import { APIError, createDeployment, getDeployments, getSystemOverview, type Deployment, type FeatureStatus } from '../api/client'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Card } from '../components/ui/card'
@@ -29,9 +33,19 @@ const fallbackFeatures: FeatureStatus[] = [
 ]
 
 export function DashboardPage() {
+  const queryClient = useQueryClient()
   const overviewQuery = useQuery({ queryKey: ['overview'], queryFn: getSystemOverview })
+  const deploymentsQuery = useQuery({ queryKey: ['deployments'], queryFn: getDeployments, retry: false })
+  const deployMutation = useMutation({
+    mutationFn: createDeployment,
+    onSettled: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['deployments'] })
+    },
+  })
   const overview = overviewQuery.data ?? emptyOverview
   const features = overview.features.length ? overview.features : fallbackFeatures
+  const latestDeployment = deploymentsQuery.data?.[0]
+  const canDeploy = deploymentsQuery.isSuccess
 
   return (
     <div className="page-enter space-y-6">
@@ -45,9 +59,9 @@ export function DashboardPage() {
             Manage NGINX routes, certificates, and security policy without exposing raw infrastructure controls.
           </p>
         </div>
-        <Button variant="primary">
+        <Link className="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-accent px-3 text-sm font-semibold text-accent-foreground transition-colors hover:bg-accent/85" to="/proxy-hosts">
           <Network className="size-4" /> Add proxy host
-        </Button>
+        </Link>
       </section>
 
       <section className="grid gap-3 sm:grid-cols-3">
@@ -58,7 +72,15 @@ export function DashboardPage() {
 
       <section className="grid gap-4 xl:grid-cols-[1.45fr_1fr]">
         <RuntimeStatus agentStatus={overview.agentStatus} serverOnline={!overviewQuery.isError} />
-        <DeploymentGuide />
+        <DeploymentPanel
+          agentOnline={overview.agentStatus === 'online'}
+          canDeploy={canDeploy}
+          error={deployMutation.error}
+          latest={latestDeployment}
+          loading={deploymentsQuery.isPending}
+          pending={deployMutation.isPending}
+          onDeploy={() => deployMutation.mutate()}
+        />
       </section>
 
       <Card>
@@ -140,33 +162,70 @@ function RuntimeRow({ icon: Icon, name, note, status }: { icon: typeof Activity;
   )
 }
 
-function DeploymentGuide() {
-  const steps = [
-    'Create a proxy host',
-    'Validate generated NGINX config',
-    'Apply an immutable revision',
-    'Issue the certificate',
-  ]
-
+function DeploymentPanel({
+  agentOnline,
+  canDeploy,
+  error,
+  latest,
+  loading,
+  pending,
+  onDeploy,
+}: {
+  agentOnline: boolean
+  canDeploy: boolean
+  error: Error | null
+  latest?: Deployment
+  loading: boolean
+  pending: boolean
+  onDeploy: () => void
+}) {
   return (
-    <Card className="p-5">
-      <div className="flex items-start justify-between gap-4">
+    <Card className="overflow-hidden">
+      <div className="flex items-start justify-between gap-4 border-b px-5 py-4">
         <div>
-          <h3 className="font-bold">First deployment</h3>
-          <p className="mt-1 text-xs leading-5 text-muted">The safe path from UI state to active traffic.</p>
+          <h3 className="font-bold">Gateway deployment</h3>
+          <p className="mt-1 text-xs leading-5 text-muted">Validate, activate, and retain one immutable NGINX revision.</p>
         </div>
-        <ArrowUpRight className="size-4 text-muted" />
+        {latest && <DeploymentBadge status={latest.status} />}
       </div>
-      <ol className="mt-6 space-y-4">
-        {steps.map((step, index) => (
-          <li className="flex gap-3" key={step}>
-            <span className="grid size-6 shrink-0 place-items-center rounded-full border bg-background font-mono text-[10px] font-bold">
-              {index + 1}
-            </span>
-            <span className="pt-0.5 text-sm font-semibold">{step}</span>
-          </li>
-        ))}
-      </ol>
+      <div className="p-5">
+        {loading ? (
+          <p className="font-mono text-xs text-muted">LOADING DEPLOYMENT STATE</p>
+        ) : latest ? (
+          <div>
+            <p className="text-xs font-bold tracking-wide text-muted uppercase">Latest revision</p>
+            <p className="mt-2 break-all font-mono text-xs">{latest.revision}</p>
+            <p className="mt-2 text-xs text-muted">Generation {latest.generation} · {formatDeploymentTime(latest.createdAt)}</p>
+            {latest.errorMessage && <p className="mt-3 rounded-md border border-red-500/30 bg-red-500/10 p-3 text-xs leading-5 text-danger">{latest.errorMessage}</p>}
+          </div>
+        ) : (
+          <p className="text-sm leading-6 text-muted">No revision has been deployed. Saved proxy hosts are not serving traffic yet.</p>
+        )}
+        {error && (
+          <p className="mt-3 text-xs text-danger" role="alert">
+            {error instanceof APIError ? error.message : 'Deployment failed'}
+          </p>
+        )}
+        <Button className="mt-5 w-full" disabled={!agentOnline || !canDeploy || pending} onClick={onDeploy} variant="primary">
+          <CloudUpload className="size-4" /> {pending ? 'Deploying…' : 'Deploy changes'}
+        </Button>
+        {!agentOnline && <p className="mt-2 text-center text-[11px] text-muted">Gateway agent must be online before deployment.</p>}
+        {!canDeploy && <p className="mt-2 text-center text-[11px] text-muted">Your role cannot deploy gateway configuration.</p>}
+      </div>
     </Card>
   )
+}
+
+function DeploymentBadge({ status }: { status: Deployment['status'] }) {
+  const tone = status === 'succeeded' ? 'success' : status === 'failed' ? 'danger' : 'warning'
+  const Icon = status === 'succeeded' ? CheckCircle2 : status === 'failed' ? XCircle : Clock3
+  return <Badge tone={tone}><Icon className="mr-1 size-3" /> {status.replace('_', ' ')}</Badge>
+}
+
+function formatDeploymentTime(value: string) {
+  return new Intl.DateTimeFormat('en-GB', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+    timeZone: 'Asia/Jakarta',
+  }).format(new Date(value))
 }

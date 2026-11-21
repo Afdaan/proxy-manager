@@ -132,7 +132,7 @@ export interface ProxyHostDetail {
   domainAliases: string[]
   upstreams: UpstreamInput[]
   loadBalancing: ProxyHost['loadBalancing']
-  tls: { mode: string; email?: string; ready: boolean; redirectHttp: boolean }
+  tls: { mode: string; email?: string; ready: boolean; status?: string; error?: string; redirectHttp: boolean }
   rateLimit: CreateProxyHostInput['rateLimit']
   waf: CreateProxyHostInput['waf']
   geo: { mode: 'off' | 'allow' | 'block'; countries?: string[] }
@@ -300,4 +300,10 @@ function readCookie(name: string): string | undefined {
   const prefix = `${encodeURIComponent(name)}=`
   const cookie = document.cookie.split('; ').find((value) => value.startsWith(prefix))
   return cookie ? decodeURIComponent(cookie.slice(prefix.length)) : undefined
+}
+export function requestAutomaticCertificate(proxyHostId: string, email: string, version: number): Promise<CreateProxyHostResult> {
+  return request<CreateProxyHostResult>(`/api/v1/proxy-hosts/${encodeURIComponent(proxyHostId)}/certificate`, {
+    method: 'POST',
+    body: JSON.stringify({ email, version }),
+  })
 }

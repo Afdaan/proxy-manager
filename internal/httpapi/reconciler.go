@@ -125,6 +125,43 @@ func (reconciler *Reconciler) Reconcile(ctx context.Context, deploymentID string
 	return reconciler.Store.CompleteDeployment(ctx, deploymentID)
 }
 
+func (reconciler *Reconciler) IssueCertificate(ctx context.Context, domains []string, email string) error {
+	if reconciler.AgentToken == "" {
+		return &agentCallError{err: errors.New("agent token is not configured"), retryable: true}
+	}
+	payload, err := json.Marshal(map[string]any{
+		"domains": domains,
+		"email":   email,
+	})
+	if err != nil {
+		return fmt.Errorf("encode certificate request: %w", err)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://agent/v1/certificates/issue", bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("create certificate request: %w", err)
+	}
+	request.Header.Set("Authorization", "Bearer "+reconciler.AgentToken)
+	request.Header.Set("Content-Type", "application/json")
+
+	response, err := reconciler.client.Do(request)
+	if err != nil {
+		return &agentCallError{err: fmt.Errorf("agent unavailable: %w", err), retryable: true}
+	}
+	defer response.Body.Close()
+	if response.StatusCode >= 200 && response.StatusCode < 300 {
+		return nil
+	}
+	contents, _ := io.ReadAll(io.LimitReader(response.Body, 64<<10))
+	var responseError struct {
+		Error string `json:"error"`
+	}
+	message := fmt.Sprintf("certificate issuance rejected with status %d", response.StatusCode)
+	if json.Unmarshal(contents, &responseError) == nil && strings.TrimSpace(responseError.Error) != "" {
+		message = responseError.Error
+	}
+	return errors.New(message)
+}
+
 func (reconciler *Reconciler) recordFailure(ctx context.Context, deployment store.Deployment, expectedStatus string, cause error) (store.Deployment, error) {
 	var agentFailure *agentCallError
 	if errors.As(cause, &agentFailure) && agentFailure.retryable {

@@ -44,6 +44,11 @@ type deleteProxyHostRequest struct {
 	Version int64 `json:"version"`
 }
 
+type issueCertificateRequest struct {
+	Email   string `json:"email"`
+	Version int64  `json:"version"`
+}
+
 func (server Server) applications(response http.ResponseWriter, request *http.Request) {
 	auth := request.Context().Value(authContextKey{}).(authContext)
 	applications, err := server.Store.ListApplications(request.Context(), auth.Session.User.ID)
@@ -173,6 +178,62 @@ func (server Server) deleteProxyHost(response http.ResponseWriter, request *http
 		status = http.StatusAccepted
 	}
 	writeJSON(response, status, map[string]any{"deployment": deployment})
+}
+
+func (server Server) issueAutomaticCertificate(response http.ResponseWriter, request *http.Request) {
+	auth := request.Context().Value(authContextKey{}).(authContext)
+	var input issueCertificateRequest
+	if err := decodeJSON(response, request, &input, 8<<10); err != nil {
+		writeError(response, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	hostID := strings.TrimSpace(request.PathValue("proxyHostID"))
+	prep, err := server.Store.PrepareAutomaticCertificate(request.Context(), auth.Session.User.ID, store.PrepareCertificateParams{
+		ProxyHostID: hostID,
+		Email:       input.Email,
+		Version:     input.Version,
+		RequestID:   requestIDFromContext(request.Context()),
+		SourceIP:    clientIP(request),
+	})
+	if server.writeProxyHostError(response, request, err) {
+		return
+	}
+
+	operationCtx, cancel := context.WithTimeout(context.WithoutCancel(request.Context()), 2*time.Minute)
+	defer cancel()
+	deployment, reconcileErr := server.Reconciler.Reconcile(operationCtx, prep.Deployment.ID)
+	if reconcileErr != nil || deployment.Status != "succeeded" {
+		server.Reconciler.Wake()
+		writeError(response, http.StatusBadGateway, "challenge_not_ready", "gateway could not prepare ACME challenge route")
+		return
+	}
+
+	if err := server.Reconciler.IssueCertificate(operationCtx, prep.Domains, prep.Email); err != nil {
+		_ = server.Store.FailAutomaticCertificate(
+			operationCtx,
+			auth.Session.User.ID,
+			hostID,
+			prep.Version,
+			err.Error(),
+			requestIDFromContext(request.Context()),
+			clientIP(request),
+		)
+		writeError(response, http.StatusUnprocessableEntity, "certificate_failed", err.Error())
+		return
+	}
+
+	activated, err := server.Store.ActivateAutomaticCertificate(
+		operationCtx,
+		auth.Session.User.ID,
+		hostID,
+		prep.Version,
+		requestIDFromContext(request.Context()),
+		clientIP(request),
+	)
+	if server.writeProxyHostError(response, request, err) {
+		return
+	}
+	server.writeReconciledProxyHost(response, request, activated, http.StatusOK)
 }
 
 func (server Server) writeReconciledProxyHost(response http.ResponseWriter, request *http.Request, result store.CreateProxyHostResult, successStatus int) {

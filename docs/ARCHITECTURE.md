@@ -57,7 +57,7 @@ The scope borrows useful policy concepts from BunkerWeb without copying its plat
 | --- | --- |
 | Reverse proxy | NGINX upstreams generated from typed records |
 | Load balancing | Round robin, least connections, or IP hash |
-| Certificates | Certbot webroot and renewal hook |
+| Certificates | Two-phase Certbot webroot issuance, HTTPS activation, and renewal status |
 | WAF | ModSecurity v3 and OWASP CRS; off, detect, or block |
 | Rate limit | Dedicated NGINX request zone per proxy host |
 | GeoIP | Country allow or block policy using GeoIP2 |

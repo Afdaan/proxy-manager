@@ -40,6 +40,7 @@ func (server Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/proxy-hosts/{proxyHostID}", server.authenticate(server.proxyHost))
 	mux.HandleFunc("PUT /api/v1/proxy-hosts/{proxyHostID}", server.authenticate(server.requireCSRF(server.updateProxyHost)))
 	mux.HandleFunc("DELETE /api/v1/proxy-hosts/{proxyHostID}", server.authenticate(server.requireCSRF(server.deleteProxyHost)))
+	mux.HandleFunc("POST /api/v1/proxy-hosts/{proxyHostID}/certificate", server.authenticate(server.requireCSRF(server.issueAutomaticCertificate)))
 	mux.HandleFunc("GET /api/v1/deployments", server.authenticate(server.deployments))
 	mux.HandleFunc("POST /api/v1/deployments", server.authenticate(server.requireCSRF(server.createDeployment)))
 	mux.HandleFunc("GET /api/v1/admin/access", server.authenticate(server.accessOverview))
@@ -80,7 +81,7 @@ func (server Server) overview(response http.ResponseWriter, request *http.Reques
 		"blockedToday": overview.BlockedToday,
 		"features": []map[string]string{
 			{"id": "reverse-proxy", "name": "Reverse proxy", "status": "foundation"},
-			{"id": "certificates", "name": "Automatic certificates", "status": "planned"},
+			{"id": "certificates", "name": "Automatic certificates", "status": "foundation"},
 			{"id": "rate-limit", "name": "Rate limiting", "status": "renderer-ready"},
 			{"id": "waf", "name": "ModSecurity + OWASP CRS", "status": "renderer-ready"},
 			{"id": "geoip", "name": "GeoIP policies", "status": "renderer-ready"},

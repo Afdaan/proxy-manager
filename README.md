@@ -89,6 +89,16 @@ Every mutation checks the record version, writes an audit event, creates a new
 complete gateway revision, validates it, and atomically activates it. A stale
 browser cannot silently overwrite a newer change.
 
+## Automatic certificates
+
+Automatic Let’s Encrypt certificates work in two safe phases:
+
+1. The control plane saves the host and opens `/.well-known/acme-challenge/`
+   backed by `/var/lib/proxy-manager/acme`.
+2. The agent executes Certbot in non-interactive webroot mode.
+3. Once issued, the server records the certificate and regenerates a revision
+   with HTTPS on port 443 and an automatic HTTP-to-HTTPS redirect.
+
 ## Access management
 
 The bootstrap account is the first platform administrator. Platform

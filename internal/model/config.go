@@ -55,6 +55,8 @@ type TLSPolicy struct {
 	Mode            string `json:"mode"`
 	Email           string `json:"email,omitempty"`
 	Ready           bool   `json:"ready"`
+	Status          string `json:"status,omitempty"`
+	Error           string `json:"error,omitempty"`
 	CertificatePath string `json:"certificatePath,omitempty"`
 	PrivateKeyPath  string `json:"privateKeyPath,omitempty"`
 	RedirectHTTP    bool   `json:"redirectHttp"`
@@ -258,6 +260,12 @@ func (policy *TLSPolicy) Validate() error {
 		if err != nil || address.Address != policy.Email {
 			return errors.New("automatic TLS requires a valid email")
 		}
+	}
+	if policy.Status != "" && !slices.Contains([]string{"pending", "issuing", "active", "failed"}, policy.Status) {
+		return errors.New("status must be pending, issuing, active, or failed")
+	}
+	if len(policy.Error) > 2000 {
+		return errors.New("certificate error must not exceed 2000 characters")
 	}
 	if policy.Mode == "custom" && (policy.CertificatePath == "" || policy.PrivateKeyPath == "") {
 		return errors.New("custom TLS requires certificatePath and privateKeyPath")

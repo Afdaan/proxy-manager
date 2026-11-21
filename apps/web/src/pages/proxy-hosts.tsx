@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
-import { ChevronDown, Network, Pencil, Plus, Search, Server, ShieldCheck, Trash2, X } from 'lucide-react'
+import { ChevronDown, Lock, Network, Pencil, Plus, Search, Server, ShieldCheck, Trash2, X } from 'lucide-react'
 import { useMemo, useState, type FormEvent, type ReactNode } from 'react'
 
 import {
@@ -9,6 +9,7 @@ import {
   getApplications,
   getProxyHost,
   getProxyHosts,
+  requestAutomaticCertificate,
   updateProxyHost,
   type CreateProxyHostResult,
   type CreateProxyHostInput,
@@ -68,6 +69,15 @@ export function ProxyHostsPage() {
       await invalidateGatewayQueries(queryClient)
     },
   })
+  const certificateMutation = useMutation({
+    mutationFn: ({ id, email, version }: { id: string; email: string; version: number }) =>
+      requestAutomaticCertificate(id, email, version),
+    onSuccess: async (result) => {
+      setLastSave(result)
+      await invalidateGatewayQueries(queryClient)
+      await queryClient.invalidateQueries({ queryKey: ['proxy-host', editingHostID] })
+    },
+  })
   const deleteMutation = useMutation({
     mutationFn: ({ id, version }: { id: string; version: number }) => deleteProxyHost(id, version),
     onSuccess: async () => {
@@ -118,9 +128,10 @@ export function ProxyHostsPage() {
         ) : (
           <HostForm
             applications={applicationsQuery.data ?? []}
-            disabled={updateMutation.isPending || deleteMutation.isPending}
-            error={updateMutation.error ?? deleteMutation.error}
+            disabled={updateMutation.isPending || deleteMutation.isPending || certificateMutation.isPending}
+            error={updateMutation.error ?? deleteMutation.error ?? certificateMutation.error}
             host={detailQuery.data}
+            onCertificate={(email) => certificateMutation.mutate({ id: detailQuery.data.id, email, version: detailQuery.data.version })}
             onDelete={() => {
               if (window.confirm(`Delete ${detailQuery.data.primaryDomain}? NGINX will remove this route immediately after validation.`)) {
                 deleteMutation.mutate({ id: detailQuery.data.id, version: detailQuery.data.version })
@@ -211,6 +222,7 @@ function HostForm({
   disabled,
   error,
   host,
+  onCertificate,
   onDelete,
   onSubmit,
 }: {
@@ -218,12 +230,14 @@ function HostForm({
   disabled: boolean
   error: Error | null
   host?: ProxyHostDetail
+  onCertificate?: (email: string) => void
   onDelete?: () => void
   onSubmit: (input: HostFormInput) => void
 }) {
   const [backends, setBackends] = useState<UpstreamInput[]>(host?.upstreams.length ? host.upstreams : [defaultBackend()])
   const [rateLimitEnabled, setRateLimitEnabled] = useState(host?.rateLimit.enabled ?? false)
   const [wafMode, setWafMode] = useState<'off' | 'detect' | 'block'>(host?.waf.mode ?? 'off')
+  const [certEmail, setCertEmail] = useState(host?.tls.email ?? '')
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -366,6 +380,41 @@ function HostForm({
             </section>
 
             <div className="flex flex-wrap gap-5">
+            {host && (
+              <section className="rounded-lg border bg-surface p-4">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="flex items-center gap-2 font-bold text-sm"><Lock className="size-4" /> Automatic TLS certificate</p>
+                    <p className="mt-1 text-xs text-muted">
+                      {host.tls.ready
+                        ? 'Certificate active. NGINX listens on 443 with HTTP to HTTPS redirect.'
+                        : host.tls.error
+                          ? `Last issue attempt failed: ${host.tls.error}`
+                          : 'Issue a Let’s Encrypt certificate after DNS points to this server.'}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      className="field min-w-56"
+                      disabled={disabled}
+                      onChange={(event) => setCertEmail(event.target.value)}
+                      placeholder="admin@example.com"
+                      type="email"
+                      value={certEmail}
+                    />
+                    <Button
+                      disabled={disabled || !certEmail}
+                      onClick={() => onCertificate?.(certEmail)}
+                      type="button"
+                      variant="secondary"
+                    >
+                      {host.tls.ready ? 'Renew / re-issue' : 'Request certificate'}
+                    </Button>
+                  </div>
+                </div>
+              </section>
+            )}
+
               <label className="flex items-center gap-3 text-sm font-semibold">
                 <input defaultChecked={host?.securityHeaders ?? true} name="securityHeaders" type="checkbox" /> Add safe security headers
               </label>

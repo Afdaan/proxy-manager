@@ -22,9 +22,10 @@ const (
 )
 
 type User struct {
-	ID          string `json:"id"`
-	Email       string `json:"email"`
-	DisplayName string `json:"displayName"`
+	ID            string `json:"id"`
+	Email         string `json:"email"`
+	DisplayName   string `json:"displayName"`
+	PlatformAdmin bool   `json:"platformAdmin"`
 }
 
 type Session struct {
@@ -114,14 +115,26 @@ func (store *Store) Login(ctx context.Context, email, password string, lifetime 
 	var passwordHash string
 	var disabledAt *time.Time
 	err = store.Pool.QueryRow(ctx, `
-		SELECT id, email, display_name, password_hash, disabled_at
+		SELECT users.id,
+		       users.email,
+		       users.display_name,
+		       users.password_hash,
+		       users.disabled_at,
+		       EXISTS (
+		           SELECT 1
+		           FROM user_platform_roles
+		           JOIN role_permissions ON role_permissions.role_id = user_platform_roles.role_id
+		           WHERE user_platform_roles.user_id = users.id
+		             AND role_permissions.permission_name = 'platform.admin'
+		       )
 		FROM users
-		WHERE email = $1`, email).Scan(
+		WHERE users.email = $1`, email).Scan(
 		&session.User.ID,
 		&session.User.Email,
 		&session.User.DisplayName,
 		&passwordHash,
 		&disabledAt,
+		&session.User.PlatformAdmin,
 	)
 	if errors.Is(err, pgx.ErrNoRows) || disabledAt != nil {
 		return Session{}, "", "", ErrInvalidCredentials
@@ -144,10 +157,22 @@ func (store *Store) Login(ctx context.Context, email, password string, lifetime 
 	session.ExpiresAt = time.Now().UTC().Add(lifetime)
 	sessionHash := sha256.Sum256([]byte(sessionToken))
 	csrfHash := sha256.Sum256([]byte(csrfToken))
-	if _, err := store.Pool.Exec(ctx, `
+	transaction, err := store.Pool.Begin(ctx)
+	if err != nil {
+		return Session{}, "", "", fmt.Errorf("begin login session: %w", err)
+	}
+	defer transaction.Rollback(ctx) //nolint:errcheck
+	if _, err := transaction.Exec(ctx, `
 		INSERT INTO sessions (token_hash, user_id, csrf_token_hash, expires_at)
 		VALUES ($1, $2, $3, $4)`, sessionHash[:], session.User.ID, csrfHash[:], session.ExpiresAt); err != nil {
 		return Session{}, "", "", fmt.Errorf("create session: %w", err)
+	}
+	if _, err := transaction.Exec(ctx, `
+		UPDATE users SET last_login_at = now() WHERE id = $1`, session.User.ID); err != nil {
+		return Session{}, "", "", fmt.Errorf("record login time: %w", err)
+	}
+	if err := transaction.Commit(ctx); err != nil {
+		return Session{}, "", "", fmt.Errorf("commit login session: %w", err)
 	}
 	return session, sessionToken, csrfToken, nil
 }
@@ -160,7 +185,18 @@ func (store *Store) Authenticate(ctx context.Context, sessionToken string) (Sess
 	var session Session
 	var csrfHash []byte
 	err := store.Pool.QueryRow(ctx, `
-		SELECT users.id, users.email, users.display_name, sessions.expires_at, sessions.csrf_token_hash
+		SELECT users.id,
+		       users.email,
+		       users.display_name,
+		       sessions.expires_at,
+		       sessions.csrf_token_hash,
+		       EXISTS (
+		           SELECT 1
+		           FROM user_platform_roles
+		           JOIN role_permissions ON role_permissions.role_id = user_platform_roles.role_id
+		           WHERE user_platform_roles.user_id = users.id
+		             AND role_permissions.permission_name = 'platform.admin'
+		       )
 		FROM sessions
 		JOIN users ON users.id = sessions.user_id
 		WHERE sessions.token_hash = $1
@@ -171,6 +207,7 @@ func (store *Store) Authenticate(ctx context.Context, sessionToken string) (Sess
 		&session.User.DisplayName,
 		&session.ExpiresAt,
 		&csrfHash,
+		&session.User.PlatformAdmin,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Session{}, nil, ErrInvalidCredentials

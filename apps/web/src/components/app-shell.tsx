@@ -10,10 +10,10 @@ import { Badge } from './ui/badge'
 import { Button } from './ui/button'
 
 const navigation = [
-  { to: '/', label: 'Overview', icon: Activity },
-  { to: '/proxy-hosts', label: 'Proxy hosts', icon: Network },
-  { to: '/security', label: 'Security', icon: ShieldCheck },
-  { to: '/access', label: 'Access', icon: UsersRound },
+  { to: '/', label: 'Overview', icon: Activity, adminOnly: false },
+  { to: '/proxy-hosts', label: 'Proxy hosts', icon: Network, adminOnly: false },
+  { to: '/security', label: 'Security', icon: ShieldCheck, adminOnly: false },
+  { to: '/access', label: 'Access', icon: UsersRound, adminOnly: true },
 ] as const
 
 const pageNames: Record<string, string> = {
@@ -45,12 +45,14 @@ export function AppShell() {
     return <div className="grid min-h-screen place-items-center text-sm text-danger">Control plane unavailable.</div>
   }
 
+  const visibleNavigation = navigation.filter((item) => !item.adminOnly || sessionQuery.data.platformAdmin)
+
   return (
     <div className="min-h-screen lg:grid lg:grid-cols-[240px_1fr]">
       <aside className="hidden border-r bg-surface/95 lg:flex lg:flex-col">
         <Brand />
         <nav className="flex-1 space-y-1 px-3 py-5" aria-label="Primary navigation">
-          {navigation.map(({ to, label, icon: Icon }) => (
+          {visibleNavigation.map(({ to, label, icon: Icon }) => (
             <Link
               key={to}
               to={to}
@@ -104,10 +106,10 @@ export function AppShell() {
         </main>
 
         <nav
-          className="fixed inset-x-3 bottom-3 z-30 grid grid-cols-4 rounded-xl border bg-surface/95 p-1 shadow-xl backdrop-blur lg:hidden"
+          className="fixed inset-x-3 bottom-3 z-30 grid grid-flow-col auto-cols-fr rounded-xl border bg-surface/95 p-1 shadow-xl backdrop-blur lg:hidden"
           aria-label="Mobile navigation"
         >
-          {navigation.map(({ to, label, icon: Icon }) => (
+          {visibleNavigation.map(({ to, label, icon: Icon }) => (
             <Link
               key={to}
               to={to}

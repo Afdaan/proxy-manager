@@ -14,7 +14,10 @@ var (
 	ErrConflict           = errors.New("resource already exists")
 	ErrForbidden          = errors.New("permission denied")
 	ErrInvalidCredentials = errors.New("invalid email or password")
+	ErrLastAdministrator  = errors.New("at least one enabled platform administrator is required")
 	ErrNotFound           = errors.New("resource not found")
+	ErrSelfAccessChange   = errors.New("administrators cannot remove their own access")
+	ErrStaleVersion       = errors.New("resource changed since it was loaded")
 )
 
 type Store struct {

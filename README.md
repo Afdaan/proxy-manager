@@ -84,6 +84,22 @@ The Overview page shows configuration history and exposes a retry action only
 when a revision fails permanently. A normal save requires no separate deploy
 step.
 
+## Access management
+
+The bootstrap account is the first platform administrator. Platform
+administrators can manage users from **Access**:
+
+- Create accounts with a temporary password.
+- Assign one application role per application.
+- Grant or remove platform administration.
+- Disable accounts and revoke every active session immediately.
+- Reset passwords and revoke existing sessions.
+- Review the latest audit records with actor and source IP.
+
+User changes use optimistic versions and a PostgreSQL advisory lock. Concurrent
+admin edits cannot silently overwrite each other, and the final enabled
+platform administrator cannot be disabled or demoted.
+
 Each successful deployment creates an immutable revision:
 
 ```text

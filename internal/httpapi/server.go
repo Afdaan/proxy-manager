@@ -39,6 +39,10 @@ func (server Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/proxy-hosts", server.authenticate(server.requireCSRF(server.createProxyHost)))
 	mux.HandleFunc("GET /api/v1/deployments", server.authenticate(server.deployments))
 	mux.HandleFunc("POST /api/v1/deployments", server.authenticate(server.requireCSRF(server.createDeployment)))
+	mux.HandleFunc("GET /api/v1/admin/access", server.authenticate(server.accessOverview))
+	mux.HandleFunc("POST /api/v1/admin/users", server.authenticate(server.requireCSRF(server.createManagedUser)))
+	mux.HandleFunc("PUT /api/v1/admin/users/{userID}", server.authenticate(server.requireCSRF(server.updateManagedUser)))
+	mux.HandleFunc("POST /api/v1/admin/users/{userID}/password", server.authenticate(server.requireCSRF(server.resetManagedUserPassword)))
 	mux.Handle("/", server.webHandler())
 	return requestIDs(securityHeaders(mux))
 }
@@ -77,7 +81,7 @@ func (server Server) overview(response http.ResponseWriter, request *http.Reques
 			{"id": "rate-limit", "name": "Rate limiting", "status": "renderer-ready"},
 			{"id": "waf", "name": "ModSecurity + OWASP CRS", "status": "renderer-ready"},
 			{"id": "geoip", "name": "GeoIP policies", "status": "renderer-ready"},
-			{"id": "rbac", "name": "Application RBAC", "status": "schema-ready"},
+			{"id": "rbac", "name": "Application RBAC", "status": "foundation"},
 		},
 	})
 }
@@ -164,6 +168,13 @@ func clientIP(request *http.Request) string {
 	host, _, err := net.SplitHostPort(request.RemoteAddr)
 	if err != nil {
 		return ""
+	}
+	remoteIP := net.ParseIP(host)
+	if remoteIP != nil && remoteIP.IsLoopback() {
+		forwarded := strings.TrimSpace(strings.Split(request.Header.Get("X-Forwarded-For"), ",")[0])
+		if net.ParseIP(forwarded) != nil {
+			return forwarded
+		}
 	}
 	return host
 }

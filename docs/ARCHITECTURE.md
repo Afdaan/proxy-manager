@@ -11,8 +11,8 @@ Browser -> server -> authenticated Unix socket -> agent -> NGINX and Certbot
 
 The server owns control-plane state:
 
-- Login, TOTP, sessions, and CSRF checks.
-- Platform roles and application memberships.
+- Password login, server-side sessions, secure cookies, and CSRF checks.
+- Platform administration, application memberships, user disablement, and password reset.
 - Proxy hosts, upstreams, certificates, WAF, rate-limit, GeoIP, and IP policies.
 - PostgreSQL transactions, optimistic version checks, audit records, and deployment jobs.
 - Desired-state generation from typed records.
@@ -59,6 +59,8 @@ The scope borrows useful policy concepts from BunkerWeb without copying its plat
 | IP controls | CIDR allow and deny rules |
 | Security headers | Safe preset; CSP remains application-owned |
 | RBAC | Platform roles and per-application memberships |
+| User administration | Provision, disable, role assignment, password reset, and session revocation |
+| Audit trail | Actor, action, resource, request ID, source IP, and structured details |
 | Recovery | Generation ordering, validation, atomic apply, and rollback |
 
 References:
@@ -71,7 +73,7 @@ References:
 
 ## Delivery order
 
-1. Authentication, RBAC, ownership, and audit trail.
+1. Authentication, RBAC, user administration, ownership, and audit trail.
 2. Proxy host CRUD, desired-state generation, apply, and rollback.
 3. Automatic certificates and renewal status.
 4. Rate-limit, IP-access, and header policies.
@@ -80,3 +82,7 @@ References:
 7. Optional active/standby gateway synchronization.
 
 TCP streams, Kubernetes ingress, plugins, custom Lua, raw NGINX snippets, multi-region control planes, and volumetric DDoS mitigation are outside the initial scope.
+
+TOTP, SSO/OIDC, SCIM, custom roles, and external audit export remain future
+identity features. They should be added only with complete recovery and
+administrator lockout handling.

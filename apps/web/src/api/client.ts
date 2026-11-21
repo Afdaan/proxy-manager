@@ -2,6 +2,53 @@ export interface User {
   id: string
   email: string
   displayName: string
+  platformAdmin: boolean
+}
+
+export interface ApplicationRole {
+  id: string
+  name: string
+  permissions: string[]
+}
+
+export interface UserMembership {
+  applicationId: string
+  applicationName: string
+  roleId: string
+  roleName: string
+}
+
+export interface ManagedUser extends User {
+  enabled: boolean
+  memberships: UserMembership[]
+  version: number
+  createdAt: string
+  lastLoginAt?: string
+}
+
+export interface AccessAuditLog {
+  id: number
+  actorEmail: string
+  action: string
+  resourceType: string
+  resourceId?: string
+  sourceIp?: string
+  details: Record<string, unknown>
+  createdAt: string
+}
+
+export interface AccessOverview {
+  applications: Application[]
+  roles: ApplicationRole[]
+  users: ManagedUser[]
+  auditLogs: AccessAuditLog[]
+}
+
+export interface ManagedUserInput {
+  email: string
+  displayName: string
+  platformAdmin: boolean
+  memberships: Array<{ applicationId: string; roleId: string }>
 }
 
 export interface FeatureStatus {
@@ -142,6 +189,36 @@ export function createProxyHost(input: CreateProxyHostInput): Promise<CreateProx
 export async function getDeployments(): Promise<Deployment[]> {
   const result = await request<{ deployments: Deployment[] }>('/api/v1/deployments')
   return result.deployments
+}
+
+export function getAccessOverview(): Promise<AccessOverview> {
+  return request<AccessOverview>('/api/v1/admin/access')
+}
+
+export async function createManagedUser(input: ManagedUserInput & { password: string }): Promise<ManagedUser> {
+  const result = await request<{ user: ManagedUser }>('/api/v1/admin/users', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+  return result.user
+}
+
+export async function updateManagedUser(
+  userId: string,
+  input: ManagedUserInput & { enabled: boolean; version: number },
+): Promise<ManagedUser> {
+  const result = await request<{ user: ManagedUser }>(`/api/v1/admin/users/${encodeURIComponent(userId)}`, {
+    method: 'PUT',
+    body: JSON.stringify(input),
+  })
+  return result.user
+}
+
+export function resetManagedUserPassword(userId: string, password: string): Promise<void> {
+  return request<void>(`/api/v1/admin/users/${encodeURIComponent(userId)}/password`, {
+    method: 'POST',
+    body: JSON.stringify({ password }),
+  })
 }
 
 export async function createDeployment(): Promise<Deployment> {

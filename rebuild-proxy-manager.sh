@@ -57,6 +57,10 @@ log "Building the control-plane server and UI"
 docker compose build server
 
 log "Installing and restarting the host agent"
+if [[ -f ./deploy/systemd/proxy-manager-agent.service ]]; then
+    sudo install -m 0644 ./deploy/systemd/proxy-manager-agent.service /etc/systemd/system/proxy-manager-agent.service
+    sudo systemctl daemon-reload
+fi
 sudo install -m 0755 ./bin/proxy-manager-agent /usr/local/bin/proxy-manager-agent
 sudo systemctl restart proxy-manager-agent
 
@@ -87,6 +91,10 @@ for attempt in {1..30}; do
 done
 
 log "Verifying NGINX and services"
+sudo install -d -m 0755 /etc/nginx/proxy-manager
+if ! sudo test -e /etc/nginx/proxy-manager/active.conf; then
+    sudo install -m 0644 /dev/null /etc/nginx/proxy-manager/active.conf
+fi
 sudo nginx -t
 docker compose ps
 

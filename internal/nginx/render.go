@@ -145,6 +145,12 @@ func (renderer Renderer) RenderAt(config model.GatewayConfig, revisionDir string
 			Contents: contents,
 		})
 	}
+	if len(sites) == 0 {
+		bundle.Files = append(bundle.Files, File{
+			Path:     filepath.Join("hosts", "00-empty.conf"),
+			Contents: []byte("# No active proxy hosts\n"),
+		})
+	}
 
 	manifestFiles := make([]string, 0, len(bundle.Files)+1)
 	for _, file := range bundle.Files {

@@ -206,7 +206,7 @@ func readSymlinkIfExists(path string) (string, error) {
 	}
 	if err != nil {
 		information, statErr := os.Lstat(path)
-		if statErr == nil && information.Mode().IsRegular() && information.Size() == 0 {
+		if statErr == nil && information.Mode().IsRegular() {
 			return "", nil
 		}
 	}
@@ -330,11 +330,19 @@ func replaceSymlink(path, target string) error {
 
 func restoreSymlink(path, target string) error {
 	if target == "" {
-		err := os.Remove(path)
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return err
+		return writeEmptyConfigFile(path)
 	}
 	return replaceSymlink(path, target)
+}
+
+func writeEmptyConfigFile(path string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	temporary := filepath.Join(filepath.Dir(path), ".active.tmp")
+	_ = os.Remove(temporary)
+	if err := os.WriteFile(temporary, []byte("# Empty active configuration managed by Proxy Manager\n"), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(temporary, path)
 }

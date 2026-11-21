@@ -111,6 +111,24 @@ func TestRejectsDuplicateDomain(t *testing.T) {
 	}
 }
 
+func TestRenderEmptySitesCreatesPlaceholderHost(t *testing.T) {
+	t.Parallel()
+
+	config := model.GatewayConfig{
+		Generation: 1,
+		Revision:   "empty-rev",
+		Sites:      nil,
+	}
+	bundle, err := (Renderer{}).Render(config)
+	if err != nil {
+		t.Fatalf("render empty config: %v", err)
+	}
+	paths := bundlePaths(bundle)
+	if !slices.Contains(paths, "hosts/00-empty.conf") {
+		t.Fatalf("expected placeholder host file, got paths: %v", paths)
+	}
+}
+
 func testGatewayConfig() model.GatewayConfig {
 	return model.GatewayConfig{
 		Generation: 42,

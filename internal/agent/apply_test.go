@@ -178,6 +178,33 @@ func TestRejectsUnsafeBundlePath(t *testing.T) {
 	}
 }
 
+func TestFailedFirstValidationKeepsEmptyConfig(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	runner := &recordingRunner{failTest: true}
+	applier := newTestApplier(root, runner)
+	if err := os.MkdirAll(filepath.Dir(applier.ActiveConfigPath), 0o755); err != nil {
+		t.Fatalf("create active config directory: %v", err)
+	}
+	if err := os.WriteFile(applier.ActiveConfigPath, []byte("# Bootstrap\n"), 0o640); err != nil {
+		t.Fatalf("create bootstrap config: %v", err)
+	}
+
+	config := testConfig(1, "2026-11-21_03-30-42Z--rev-1--failed")
+	if err := applier.Apply(context.Background(), config); err == nil {
+		t.Fatal("expected validation failure")
+	}
+
+	info, err := os.Stat(applier.ActiveConfigPath)
+	if err != nil {
+		t.Fatalf("active config was removed after failed validation: %v", err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatalf("expected regular file, got %v", info.Mode())
+	}
+}
+
 func newTestApplier(root string, runner CommandRunner) *Applier {
 	return &Applier{
 		Renderer:         nginx.Renderer{},
